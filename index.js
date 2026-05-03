@@ -4,7 +4,9 @@ const {
   default: makeWASocket,
   useMultiFileAuthState,
   DisconnectReason,
-  fetchLatestBaileysVersion
+  fetchLatestBaileysVersion,
+  makeCacheableSignalKeyStore,
+  getContentType
 } = require("@whiskeysockets/baileys");
 
 const Anthropic = require("@anthropic-ai/sdk");
@@ -13,7 +15,7 @@ const QRCode = require("qrcode");
 const http = require("http");
 const pino = require("pino");
 
-// Gemini
+// IA
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const CLAUDE_API_KEY = process.env.ANTHROPIC_API_KEY;
 
@@ -26,6 +28,8 @@ const anthropic = CLAUDE_API_KEY ? new Anthropic({ apiKey: CLAUDE_API_KEY }) : n
 
 // Histórico
 const conversationHistory = new Map();
+let currentQRUrl = null;
+let botOnline = false;
 
 const modeloStats = {
   gemini: { total: 0, count: 0 },
@@ -40,39 +44,26 @@ function registrarLatencia(modelo, ms) {
 function modeloMaisRapido() {
   const g = modeloStats.gemini;
   const c = modeloStats.claude;
-
   const gemAvg = g.count ? g.total / g.count : Infinity;
   const claAvg = c.count ? c.total / c.count : Infinity;
-
   return gemAvg <= claAvg ? "gemini" : "claude";
 }
 
 function classificarMensagem(texto) {
-  const simples = [
-    "oi", "olá", "bom dia", "boa tarde", "boa noite",
-    "tudo bem", "como funciona", "horário", "atendimento"
-  ];
-
+  const simples = ["oi","olá","bom dia","boa tarde","boa noite","tudo bem","como funciona","horário","atendimento"];
   if (texto.length < 20) return "simples";
   if (simples.some(p => texto.toLowerCase().includes(p))) return "simples";
-
   return "complexa";
 }
-
-// Config
-let currentQRUrl = null;
-let botOnline = false;
 
 const BOT_CONFIG = {
   businessName: "JD Advocacia",
   maxHistoryLength: 20,
   advogadoNumero: process.env.ADVOGADO_NUMERO || "",
-
   welcomeMessage:
     "Olá! 👋 Bem-vindo ao *JD Advocacia*.\n\n" +
     "Sou o assistente virtual do escritório, especializado em *Direito Empresarial* e *Direito Tributário*.\n\n" +
     "Como posso te ajudar hoje?",
-
   systemPrompt: `Você é o assistente virtual do escritório JD Advocacia, especializado em Direito Empresarial e Direito Tributário.
 
 SOBRE O ESCRITÓRIO:
@@ -140,48 +131,32 @@ async function getAIResponse(customerId, customerMessage) {
 
   const history = conversationHistory.get(customerId);
 
-  history.push({
-    role: "user",
-    content: customerMessage,
-    parts: [{ text: customerMessage }]
-  });
+  history.push({ role: "user", content: customerMessage });
 
   if (history.length > BOT_CONFIG.maxHistoryLength) {
     history.splice(0, history.length - BOT_CONFIG.maxHistoryLength);
   }
 
   const saveReply = (reply) => {
-    history.push({
-      role: "assistant",
-      content: reply,
-      parts: [{ text: reply }]
-    });
+    history.push({ role: "assistant", content: reply });
   };
 
   const tipo = classificarMensagem(customerMessage);
-
   let prioridade = tipo === "simples" ? "gemini" : "claude";
-
   const maisRapido = modeloMaisRapido();
-  if (maisRapido !== prioridade) {
-    prioridade = maisRapido;
-  }
+  if (maisRapido !== prioridade) prioridade = maisRapido;
 
   console.log(`⚖️ Modelo escolhido: ${prioridade.toUpperCase()} (tipo: ${tipo})`);
 
   async function tentarGemini() {
     const inicio = Date.now();
-
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${GEMINI_API_KEY}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          system_instruction: {
-            role: "system",
-            parts: [{ text: BOT_CONFIG.systemPrompt }]
-          },
+          system_instruction: { role: "system", parts: [{ text: BOT_CONFIG.systemPrompt }] },
           contents: history.map(h => ({
             role: h.role === "assistant" ? "model" : "user",
             parts: [{ text: h.content }]
@@ -191,39 +166,30 @@ async function getAIResponse(customerId, customerMessage) {
     );
 
     const data = await response.json();
-
     registrarLatencia("gemini", Date.now() - inicio);
 
-    return (
-      data?.candidates?.[0]?.content?.parts?.[0]?.text ||
-      "Desculpe, não consegui gerar uma resposta agora."
-    );
+    return data?.candidates?.[0]?.content?.parts?.[0]?.text ||
+      "Desculpe, não consegui gerar uma resposta agora.";
   }
 
   async function tentarClaude() {
     if (!anthropic) throw new Error("Claude não configurado");
 
     const inicio = Date.now();
-
     const response = await anthropic.messages.create({
       model: "claude-sonnet-4-6",
       max_tokens: 1024,
       system: BOT_CONFIG.systemPrompt,
-      messages: history.map(h => ({
-        role: h.role,
-        content: h.content
-      }))
+      messages: history.map(h => ({ role: h.role, content: h.content }))
     });
 
     registrarLatencia("claude", Date.now() - inicio);
-
     return response.content[0].text;
   }
 
-  const ordem =
-    prioridade === "gemini"
-      ? [tentarGemini, tentarClaude]
-      : [tentarClaude, tentarGemini];
+  const ordem = prioridade === "gemini"
+    ? [tentarGemini, tentarClaude]
+    : [tentarClaude, tentarGemini];
 
   for (const tentativa of ordem) {
     try {
@@ -238,27 +204,73 @@ async function getAIResponse(customerId, customerMessage) {
   return "Desculpe, estou com instabilidade no momento. Tente novamente em instantes.";
 }
 
-// 🔥 Função para identificar corretamente o número do cliente
-function obterRemetente(message) {
-  if (message.key.remoteJid?.includes("@lid")) {
-    return message.key.senderPn || message.key.remoteJid;
+// Extrair texto
+function extrairTexto(message) {
+  const m = message.message;
+  if (!m) return "";
+
+  if (m.conversation) return m.conversation;
+  if (m.extendedTextMessage?.text) return m.extendedTextMessage.text;
+
+  const tipos = [
+    "imageMessage","videoMessage","documentMessage",
+    "audioMessage","buttonsResponseMessage","listResponseMessage",
+    "templateMessage"
+  ];
+
+  for (const tipo of tipos) {
+    if (m[tipo]?.caption) return m[tipo].caption;
+    if (m[tipo]?.text) return m[tipo].text;
   }
-  return message.key.remoteJid;
+
+  try {
+    const contentType = getContentType(m);
+    if (contentType && m[contentType]) {
+      return m[contentType]?.text ||
+             m[contentType]?.caption ||
+             m[contentType]?.conversation ||
+             "";
+    }
+  } catch {}
+
+  return "";
 }
 
-// 🔥 Baileys corrigido
+// Remetente compatível com Business
+function obterRemetente(message) {
+  const jid = message.key.remoteJid;
+
+  if (jid.includes("@lid")) {
+    return (
+      message.key.participant ||
+      message.key.sender ||
+      message.key.senderPn ||
+      jid
+    );
+  }
+
+  return jid;
+}
+
+// Iniciar Bot (modo híbrido compatível com WhatsApp Business)
 async function iniciarBot() {
   console.log(`\n🤖 Iniciando Bot WhatsApp + Gemini/Claude...`);
   console.log(`📋 Empresa: ${BOT_CONFIG.businessName}\n`);
 
-  const { state, saveCreds } = await useMultiFileAuthState("./auth_info");
+  const { state, saveCreds } = await useMultiFileAuthState("auth_info");
   const { version } = await fetchLatestBaileysVersion();
 
   const sock = makeWASocket({
     version,
-    printQRInTerminal: true,
-    auth: state,
-    logger: pino({ level: "silent" })
+    printQRInTerminal: false,
+    logger: pino({ level: "silent" }),
+    syncFullHistory: true,
+    markOnlineOnConnect: true,
+    auth: {
+      creds: state.creds,
+      keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "silent" })),
+    },
+    getMessage: async () => ({ conversation: "" }),
   });
 
   sock.ev.on("creds.update", saveCreds);
@@ -293,6 +305,7 @@ async function iniciarBot() {
       console.log("⚠️ Conexão encerrada. Reconectando:", shouldReconnect);
 
       if (shouldReconnect) {
+        await new Promise(r => setTimeout(r, 3000));
         iniciarBot();
       } else {
         console.log("❌ Sessão encerrada. Delete a pasta auth_info e reinicie.");
@@ -300,25 +313,23 @@ async function iniciarBot() {
     }
   });
 
-  sock.ev.on("messages.upsert", async ({ messages }) => {
-    const msg = messages[0];
+  sock.ev.on("messages.upsert", async ({ messages, type }) => {
+    if (type !== "notify") return;
 
-    if (!msg.message || msg.key.fromMe) return;
+    for (const msg of messages) {
+      if (!msg.message || msg.key.fromMe) continue;
 
-    const remoteJid = obterRemetente(msg);
+      const remoteJid = obterRemetente(msg);
+      const texto = extrairTexto(msg);
 
-    const texto =
-      msg.message.conversation ||
-      msg.message.extendedTextMessage?.text ||
-      "";
+      if (!texto.trim()) continue;
 
-    if (!texto.trim()) return;
+      console.log(`📩 Mensagem recebida de ${remoteJid}: "${texto}"`);
 
-    console.log(`📩 Mensagem recebida: "${texto}"`);
+      const aiReply = await getAIResponse(remoteJid, texto);
 
-    const aiReply = await getAIResponse(remoteJid, texto);
-
-    await sock.sendMessage(remoteJid, { text: aiReply });
+      await sock.sendMessage(remoteJid, { text: aiReply });
+    }
   });
 }
 
