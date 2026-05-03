@@ -6,6 +6,7 @@ ENV NODE_ENV=production
 # Instala dependências essenciais para o Baileys
 RUN apt-get update && apt-get install -y \
     openssl \
+    git \
     --no-install-recommends && \
     rm -rf /var/lib/apt/lists/*
 
