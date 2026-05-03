@@ -82,9 +82,9 @@ SOBRE O ESCRITÓRIO:
 COMO VOCÊ DEVE SE COMPORTAR:
 - Seja cordial, profissional e objetivo
 - Responda sempre em português do Brasil
-- Use linguagem acessível, evite termos jurídicos complexos sem explicação
-- Nunca dê pareceres jurídicos ou opiniões legais — apenas oriente o cliente a agendar uma consulta
-- Mantenha respostas curtas, adequadas para WhatsApp (sem markdown excessivo)
+- Use linguagem acessível
+- Nunca dê pareceres jurídicos
+- Mantenha respostas curtas
 
 TRANSFERÊNCIA PARA HUMANO:
 - Se o cliente insistir em detalhes de um caso específico, quiser falar com o advogado, ou você não souber responder, diga que vai transferir para um atendente e termine sua resposta com a palavra TRANSFERIR_HUMANO`,
@@ -238,7 +238,15 @@ async function getAIResponse(customerId, customerMessage) {
   return "Desculpe, estou com instabilidade no momento. Tente novamente em instantes.";
 }
 
-// 🔥 **AQUI COMEÇA O BAILEYS CORRIGIDO**
+// 🔥 Função para identificar corretamente o número do cliente
+function obterRemetente(message) {
+  if (message.key.remoteJid?.includes("@lid")) {
+    return message.key.senderPn || message.key.remoteJid;
+  }
+  return message.key.remoteJid;
+}
+
+// 🔥 Baileys corrigido
 async function iniciarBot() {
   console.log(`\n🤖 Iniciando Bot WhatsApp + Gemini/Claude...`);
   console.log(`📋 Empresa: ${BOT_CONFIG.businessName}\n`);
@@ -297,11 +305,7 @@ async function iniciarBot() {
 
     if (!msg.message || msg.key.fromMe) return;
 
-    const remoteJid = msg.key.remoteJid || "";
-
-    if (remoteJid.includes("@g.us")) return;
-    if (remoteJid === "status@broadcast") return;
-    if (remoteJid.includes("@newsletter")) return;
+    const remoteJid = obterRemetente(msg);
 
     const texto =
       msg.message.conversation ||
