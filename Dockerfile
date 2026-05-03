@@ -7,6 +7,7 @@ ENV NODE_ENV=production
 RUN apt-get update && apt-get install -y \
     openssl \
     git \
+    openssh-client \
     --no-install-recommends && \
     rm -rf /var/lib/apt/lists/*
 
