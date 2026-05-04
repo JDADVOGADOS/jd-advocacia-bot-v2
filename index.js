@@ -62,7 +62,7 @@ let ultimoQR = null;
 // Inicialização do Express
 // =========================
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
 
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
@@ -186,6 +186,9 @@ async function iniciarWhatsApp() {
     auth: state,
     printQRInTerminal: false,
     browser: ["JDAdvogados", "Chrome", "1.0"],
+
+    // ESSENCIAL: força versão estável do WhatsApp Web
+    version: [2, 3000, 101]
   });
 
   sock.ev.on("creds.update", saveCreds);
