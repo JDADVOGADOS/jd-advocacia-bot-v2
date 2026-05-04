@@ -1,17 +1,17 @@
 {
-  "name": "jdadv-bot",
+  "name": "jd-advocacia-bot",
   "version": "1.0.0",
+  "description": "Assistente virtual do escritório JD Advocacia (WhatsApp + Gemini + Claude fallback)",
   "main": "index.js",
-  "type": "commonjs",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "0.21.0",
     "@whiskeysockets/baileys": "7.0.0-rc.9",
-    "@anthropic-ai/sdk": "^0.21.0",
-    "dotenv": "^16.4.5",
-    "pino": "^8.17.0",
-    "qrcode-terminal": "^0.12.0",
-    "qrcode": "^1.5.3"
+    "dotenv": "16.4.5",
+    "pino": "8.17.0",
+    "qrcode": "1.5.3",
+    "qrcode-terminal": "0.12.0"
   }
 }

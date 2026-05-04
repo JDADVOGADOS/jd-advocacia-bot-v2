@@ -23,6 +23,7 @@ if (!GEMINI_API_KEY) {
   console.warn("⚠️ GEMINI_API_KEY não encontrada! O bot funcionará apenas com Claude.");
 }
 
+
 const anthropic = CLAUDE_API_KEY ? new Anthropic({ apiKey: CLAUDE_API_KEY }) : null;
 
 // Histórico
