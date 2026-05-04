@@ -183,13 +183,13 @@ async function iniciarWhatsApp() {
   const { state, saveCreds } = await useMultiFileAuthState("/tmp/auth_info");
 
   sock = makeWASocket({
-    auth: state,
-    printQRInTerminal: false,
-    browser: ["JDAdvogados", "Chrome", "1.0"],
+  auth: state,
+  printQRInTerminal: false,
+  browser: ["JDAdvogados", "Chrome", "1.0"],
 
-    // ESSENCIAL: força versão estável do WhatsApp Web
-    version: [2, 3000, 101]
-  });
+  // VERSÃO CORRETA DO WHATSAPP WEB
+  version: [2, 2413, 51]
+});
 
   sock.ev.on("creds.update", saveCreds);
 
