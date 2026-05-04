@@ -8,7 +8,7 @@
   },
  "dependencies": {
   "@anthropic-ai/sdk": "0.21.0",
-  "@whiskeysockets/baileys": "7.0.0-rc.9",
+  "@whiskeysockets/baileys": "^6.7.7",
   "dotenv": "16.4.5",
   "pino": "8.17.0",
   "qrcode": "1.5.3",
