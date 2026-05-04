@@ -1,9 +1,7 @@
-// =========================
-// LIMPA auth_info ANTES DE QUALQUER COISA
-// =========================
 const fs = require("fs");
 const path = require("path");
 
+// LIMPA auth_info ANTES DE QUALQUER OUTRA COISA
 try {
   if (fs.existsSync("auth_info")) {
     console.log("⚠️ Removendo pasta auth_info para forçar QR...");
@@ -13,11 +11,10 @@ try {
   console.log("Não foi possível remover auth_info, continuando mesmo assim.");
 }
 
+
 // =========================
 // Imports básicos
 // =========================
-const fs = require("fs");
-const path = require("path");
 const express = require("express");
 const session = require("express-session");
 const bodyParser = require("body-parser");
