@@ -180,7 +180,7 @@ async function enviarEmailTransferencia(transferencia) {
 // WhatsApp (Baileys) com QR forçado
 // =========================
 async function iniciarWhatsApp() {
-  const { state, saveCreds } = await useMultiFileAuthState("auth_info");
+  const { state, saveCreds } = await useMultiFileAuthState("/tmp/auth_info");
 
   sock = makeWASocket({
     auth: state,
