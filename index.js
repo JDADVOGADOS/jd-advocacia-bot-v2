@@ -150,6 +150,8 @@ async function getAIResponse(customerId, customerMessage) {
 
   // GEMINI ATUALIZADO
   async function tentarGemini() {
+  if (!GEMINI_API_KEY) return null;  // <--- ADICIONE ESTA LINHA
+
     try {
       const inicio = Date.now();
 
