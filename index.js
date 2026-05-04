@@ -20,9 +20,9 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const CLAUDE_API_KEY = process.env.ANTHROPIC_API_KEY;
 
 if (!GEMINI_API_KEY) {
-  console.error("❌ GEMINI_API_KEY não encontrada!");
-  process.exit(1);
+  console.warn("⚠️ GEMINI_API_KEY não encontrada! O bot funcionará apenas com Claude.");
 }
+
 
 const anthropic = CLAUDE_API_KEY ? new Anthropic({ apiKey: CLAUDE_API_KEY }) : null;
 
