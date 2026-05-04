@@ -1,7 +1,9 @@
 const fs = require("fs");
 const path = require("path");
 
+// =========================
 // LIMPA auth_info ANTES DE QUALQUER OUTRA COISA
+// =========================
 try {
   if (fs.existsSync("auth_info")) {
     console.log("⚠️ Removendo pasta auth_info para forçar QR...");
@@ -11,7 +13,6 @@ try {
   console.log("Não foi possível remover auth_info, continuando mesmo assim.");
 }
 
-
 // =========================
 // Imports básicos
 // =========================
@@ -20,12 +21,9 @@ const session = require("express-session");
 const bodyParser = require("body-parser");
 const nodemailer = require("nodemailer");
 const { Boom } = require("@hapi/boom");
+
+// IMPORTA BAILEYS APENAS UMA VEZ
 const makeWASocket = require("@whiskeysockets/baileys").default;
-const {
-  useMultiFileAuthState,
-  DisconnectReason,
-} = require("@whiskeysockets/baileys");
-;
 const {
   useMultiFileAuthState,
   DisconnectReason,
@@ -61,18 +59,6 @@ let sock;
 let ultimoQR = null;
 
 // =========================
-// Limpeza automática da pasta auth_info
-// =========================
-try {
-  if (fs.existsSync("auth_info")) {
-    console.log("⚠️ Removendo pasta auth_info para forçar QR...");
-    fs.rmSync("auth_info", { recursive: true, force: true });
-  }
-} catch (err) {
-  console.log("Não foi possível remover auth_info, continuando mesmo assim.");
-}
-
-// =========================
 // Inicialização do Express
 // =========================
 const app = express();
@@ -88,6 +74,7 @@ app.use(
     saveUninitialized: false,
   })
 );
+
 // =========================
 // Funções auxiliares: JSON de transferências
 // =========================
@@ -197,8 +184,8 @@ async function iniciarWhatsApp() {
 
   sock = makeWASocket({
     auth: state,
-    printQRInTerminal: false, // vamos capturar o QR manualmente
-    browser: ["JDAdvogados", "Chrome", "1.0"], // força modo QR
+    printQRInTerminal: false,
+    browser: ["JDAdvogados", "Chrome", "1.0"],
   });
 
   sock.ev.on("creds.update", saveCreds);
@@ -216,12 +203,12 @@ async function iniciarWhatsApp() {
         lastDisconnect?.error?.output?.statusCode !==
         DisconnectReason.loggedOut;
       console.log("Conexão fechada. Reconectar:", shouldReconnect);
-      if (shouldReconnect) {
-        iniciarWhatsApp();
-      }
-    } else if (connection === "open") {
+      if (shouldReconnect) iniciarWhatsApp();
+    }
+
+    if (connection === "open") {
       console.log("✅ WhatsApp conectado.");
-      ultimoQR = null; // limpa o QR quando conecta
+      ultimoQR = null;
     }
   });
 
@@ -230,8 +217,7 @@ async function iniciarWhatsApp() {
     if (!msg.message || msg.key.fromMe) return;
 
     const remoteJid = msg.key.remoteJid;
-    const isGroup = remoteJid.endsWith("@g.us");
-    if (isGroup) return;
+    if (remoteJid.endsWith("@g.us")) return;
 
     const texto =
       msg.message.conversation ||
@@ -242,11 +228,11 @@ async function iniciarWhatsApp() {
 
     const resposta = await processarMensagemIA(remoteJid, texto);
 
-    if (resposta && resposta.textoLimpo) {
+    if (resposta?.textoLimpo) {
       await sock.sendMessage(remoteJid, { text: resposta.textoLimpo });
     }
 
-    if (resposta && resposta.transferirHumano) {
+    if (resposta?.transferirHumano) {
       console.log("🔄 IA solicitou transferência para humano.");
 
       const transferencia = registrarTransferencia({
@@ -264,9 +250,7 @@ async function iniciarWhatsApp() {
 
 async function enviarWhatsAppParaAdvogado(transferencia) {
   if (!sock) {
-    console.warn(
-      "⚠️ Socket WhatsApp não inicializado. Não foi possível enviar ao advogado."
-    );
+    console.warn("⚠️ Socket WhatsApp não inicializado.");
     return;
   }
 
@@ -281,29 +265,24 @@ async function enviarWhatsAppParaAdvogado(transferencia) {
     `*Motivo:* ${motivo}`,
     `*Data/Hora:* ${new Date(criadoEm).toLocaleString("pt-BR")}`,
     "",
-    "Acesse o painel para mais detalhes: /dashboard",
+    "Acesse o painel: /dashboard",
   ].join("\n");
 
   try {
     await sock.sendMessage(ADVOGADO_WA, { text: texto });
-    console.log(
-      "📲 Mensagem de transferência enviada ao advogado no WhatsApp."
-    );
+    console.log("📲 Mensagem enviada ao advogado.");
   } catch (err) {
-    console.error("Erro ao enviar WhatsApp para advogado:", err);
+    console.error("Erro ao enviar WhatsApp:", err);
   }
 }
+
 // =========================
 // IA: Gemini + Claude
 // =========================
 async function chamarGemini(prompt) {
-  if (!GEMINI_API_KEY) {
-    console.warn("⚠️ GEMINI_API_KEY não encontrada. Ignorando Gemini.");
-    return null;
-  }
+  if (!GEMINI_API_KEY) return null;
 
   try {
-    console.log("🤖 Chamando Gemini...");
     const resp = await fetch(
       "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" +
         GEMINI_API_KEY,
@@ -311,11 +290,7 @@ async function chamarGemini(prompt) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          contents: [
-            {
-              parts: [{ text: prompt }],
-            },
-          ],
+          contents: [{ parts: [{ text: prompt }] }],
         }),
       }
     );
@@ -324,21 +299,17 @@ async function chamarGemini(prompt) {
     const texto =
       data?.candidates?.[0]?.content?.parts?.[0]?.text ||
       "Desculpe, tive um problema ao responder.";
+
     return { modelo: "GEMINI", texto };
-  } catch (err) {
-    console.error("Erro ao chamar Gemini:", err);
+  } catch {
     return null;
   }
 }
 
 async function chamarClaude(prompt) {
-  if (!ANTHROPIC_API_KEY) {
-    console.warn("⚠️ ANTHROPIC_API_KEY não encontrada. Ignorando Claude.");
-    return null;
-  }
+  if (!ANTHROPIC_API_KEY) return null;
 
   try {
-    console.log("🤖 Chamando Claude Sonnet 4.6...");
     const resp = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -349,12 +320,7 @@ async function chamarClaude(prompt) {
       body: JSON.stringify({
         model: "claude-sonnet-4-6",
         max_tokens: 1024,
-        messages: [
-          {
-            role: "user",
-            content: prompt,
-          },
-        ],
+        messages: [{ role: "user", content: prompt }],
       }),
     });
 
@@ -362,9 +328,9 @@ async function chamarClaude(prompt) {
     const texto =
       data?.content?.[0]?.text ||
       "Desculpe, tive um problema ao responder.";
+
     return { modelo: "CLAUDE", texto };
-  } catch (err) {
-    console.error("Erro ao chamar Claude:", err);
+  } catch {
     return null;
   }
 }
@@ -382,149 +348,63 @@ function analisarTransferencia(texto) {
 async function processarMensagemIA(numero, mensagem) {
   try {
     const tipo = mensagem.length <= 120 ? "simples" : "complexa";
-    console.log(`⚖️ Tipo de mensagem: ${tipo}`);
 
-    let respostaIA = null;
+    let respostaIA =
+      tipo === "simples"
+        ? await chamarGemini(mensagem)
+        : await chamarClaude(mensagem);
 
-    if (tipo === "simples") {
-      respostaIA = await chamarGemini(mensagem);
-      if (!respostaIA) {
-        respostaIA = await chamarClaude(mensagem);
-      }
-    } else {
-      respostaIA = await chamarClaude(mensagem);
-      if (!respostaIA) {
-        respostaIA = await chamarGemini(mensagem);
-      }
-    }
+    if (!respostaIA)
+      respostaIA =
+        tipo === "simples"
+          ? await chamarClaude(mensagem)
+          : await chamarGemini(mensagem);
 
-    if (!respostaIA) {
-      console.error("❌ Nenhum modelo respondeu.");
+    if (!respostaIA)
       return {
         textoLimpo:
-          "No momento estou com dificuldades técnicas para responder. Tente novamente em instantes.",
+          "Estou com dificuldades técnicas agora. Tente novamente em instantes.",
         transferirHumano: false,
       };
-    }
-
-    console.log(`✅ Resposta gerada por: ${respostaIA.modelo}`);
 
     const { textoLimpo, transferirHumano } = analisarTransferencia(
       respostaIA.texto
     );
 
     return { textoLimpo, transferirHumano };
-  } catch (err) {
-    console.error("Erro em processarMensagemIA:", err);
+  } catch {
     return {
       textoLimpo:
-        "Ocorreu um erro ao processar sua mensagem. Tente novamente em alguns instantes.",
+        "Ocorreu um erro ao processar sua mensagem. Tente novamente.",
       transferirHumano: false,
     };
   }
 }
+
 // =========================
-// Middleware de autenticação do painel
+// Middleware de autenticação
 // =========================
 function requireLogin(req, res, next) {
-  if (req.session && req.session.logado) {
-    return next();
-  }
+  if (req.session?.logado) return next();
   return res.redirect("/login");
 }
 
 // =========================
-// Rotas: Login / Logout
+// Rotas de Login
 // =========================
 app.get("/login", (req, res) => {
   const erro = req.query.erro ? "Usuário ou senha inválidos." : "";
+
   res.send(`
-    <!DOCTYPE html>
-    <html lang="pt-BR">
-    <head>
-      <meta charset="UTF-8" />
-      <title>Login - JD Advogados</title>
-      <style>
-        body {
-          font-family: Arial, sans-serif;
-          background: #f5f5f5;
-          display: flex;
-          justify-content: center;
-          align-items: center;
-          height: 100vh;
-          margin: 0;
-        }
-        .container {
-          background: #ffffff;
-          padding: 24px 32px;
-          border-radius: 8px;
-          box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-          width: 320px;
-        }
-        h1 {
-          margin-top: 0;
-          font-size: 20px;
-          text-align: center;
-        }
-        label {
-          display: block;
-          margin-top: 12px;
-          font-size: 14px;
-        }
-        input[type="text"],
-        input[type="password"] {
-          width: 100%;
-          padding: 8px;
-          margin-top: 4px;
-          border-radius: 4px;
-          border: 1px solid #ccc;
-          box-sizing: border-box;
-        }
-        button {
-          margin-top: 16px;
-          width: 100%;
-          padding: 10px;
-          background: #1e88e5;
-          color: #fff;
-          border: none;
-          border-radius: 4px;
-          cursor: pointer;
-          font-size: 14px;
-        }
-        button:hover {
-          background: #1565c0;
-        }
-        .erro {
-          color: #c62828;
-          font-size: 13px;
-          margin-top: 8px;
-          text-align: center;
-        }
-      </style>
-    </head>
-    <body>
-      <div class="container">
-        <h1>Painel JD Advogados</h1>
-        <form method="POST" action="/login">
-          <label for="usuario">Usuário</label>
-          <input type="text" id="usuario" name="usuario" required />
-
-          <label for="senha">Senha</label>
-          <input type="password" id="senha" name="senha" required />
-
-          <button type="submit">Entrar</button>
-          ${
-            erro
-              ? `<div class="erro">${erro}</div>`
-              : `<div style="margin-top:8px;font-size:12px;color:#777;text-align:center;">
-                  Usuário: <strong>${ADMIN_USER}</strong><br/>
-                  Senha: <strong>${ADMIN_PASS}</strong>
-                 </div>`
-          }
-        </form>
-      </div>
-    </body>
-    </html>
+    <html><body>
+      <h2>Login</h2>
+      <form method="POST" action="/login">
+        <input name="usuario" placeholder="Usuário" />
+        <input name="senha" type="password" placeholder="Senha" />
+        <button>Entrar</button>
+        <div>${erro}</div>
+      </form>
+    </body></html>
   `);
 });
 
@@ -538,258 +418,91 @@ app.post("/login", (req, res) => {
 });
 
 app.get("/logout", (req, res) => {
-  req.session.destroy(() => {
-    res.redirect("/login");
-  });
+  req.session.destroy(() => res.redirect("/login"));
 });
 
 // =========================
-// Rota: QR Code para o painel
+// Rota do QR
 // =========================
 app.get("/qr", requireLogin, (req, res) => {
-  if (!ultimoQR) {
-    return res.send(`
-      <div style="font-family:Arial;padding:20px;">
-        <h3>Aguardando geração do QR Code...</h3>
-        <p>Se o QR não aparecer em alguns segundos, clique em "Redeploy" no Railway para reiniciar o bot.</p>
-      </div>
-    `);
-  }
+  if (!ultimoQR)
+    return res.send("<h3>Aguardando geração do QR...</h3>");
 
-  res.send(`
-    <div style="font-family: monospace; white-space: pre; padding: 20px;">
-${ultimoQR}
-    </div>
-  `);
+  res.send(`<pre>${ultimoQR}</pre>`);
 });
 
 // =========================
-// Rota: Dashboard (só libera painel completo após conexão)
+// Dashboard
 // =========================
 app.get("/dashboard", requireLogin, (req, res) => {
   const transferencias = carregarTransferencias().sort(
     (a, b) => new Date(b.criadoEm) - new Date(a.criadoEm)
   );
 
-  // Se ainda existe QR, significa que NÃO conectou ainda → mostra só a tela de conexão
-  if (ultimoQR) {
+  if (ultimoQR)
     return res.send(`
-      <!DOCTYPE html>
-      <html lang="pt-BR">
-      <head>
-        <meta charset="UTF-8" />
-        <title>Conectar WhatsApp - JD Advogados</title>
-        <style>
-          body {
-            font-family: Arial, sans-serif;
-            background: #f5f5f5;
-            margin: 0;
-            padding: 0;
-          }
-          header {
-            background: #1e88e5;
-            color: #fff;
-            padding: 16px 24px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-          }
-          header h1 {
-            margin: 0;
-            font-size: 20px;
-          }
-          header a {
-            color: #fff;
-            text-decoration: none;
-            font-size: 14px;
-          }
-          main {
-            padding: 24px;
-          }
-          iframe {
-            background: #fff;
-            border-radius: 8px;
-          }
-        </style>
-      </head>
-      <body>
-        <header>
-          <h1>Conectar WhatsApp - JD Advogados</h1>
-          <a href="/logout">Sair</a>
-        </header>
-        <main>
-          <h2>QR Code do WhatsApp</h2>
-          <p>Escaneie o QR abaixo com o WhatsApp do escritório para conectar o bot.</p>
-          <iframe src="/qr" style="width:100%;height:260px;border:1px solid #ccc;border-radius:6px;"></iframe>
-          <p style="margin-top:16px;color:#555;font-size:13px;">
-            Assim que o WhatsApp conectar, esta tela será substituída pelo painel de transferências.
-          </p>
-        </main>
-      </body>
-      </html>
+      <h2>Conectar WhatsApp</h2>
+      <iframe src="/qr" style="width:100%;height:260px;"></iframe>
     `);
-  }
 
-  // Se NÃO há QR, consideramos que o WhatsApp está conectado → mostra painel completo
   const linhas = transferencias
-    .map((t) => {
-      const data = new Date(t.criadoEm).toLocaleString("pt-BR");
-      const statusCor = t.status === "pendente" ? "#c62828" : "#2e7d32";
-      const statusTexto = t.status === "pendente" ? "Pendente" : "Atendido";
-
-      return `
-        <tr>
-          <td>${t.id}</td>
-          <td>${t.nome}</td>
-          <td>${t.numero}</td>
-          <td>${data}</td>
-          <td>${t.mensagem}</td>
-          <td>${t.motivo}</td>
-          <td style="color:${statusCor};font-weight:bold;">${statusTexto}</td>
-          <td>
-            ${
-              t.status === "pendente"
-                ? `<form method="POST" action="/transferencias/${t.id}/atender" style="margin:0;">
-                     <button type="submit">Marcar como atendido</button>
-                   </form>`
-                : "-"
-            }
-          </td>
-        </tr>
-      `;
-    })
+    .map(
+      (t) => `
+      <tr>
+        <td>${t.id}</td>
+        <td>${t.nome}</td>
+        <td>${t.numero}</td>
+        <td>${new Date(t.criadoEm).toLocaleString("pt-BR")}</td>
+        <td>${t.mensagem}</td>
+        <td>${t.motivo}</td>
+        <td>${t.status}</td>
+        <td>
+          ${
+            t.status === "pendente"
+              ? `<form method="POST" action="/transferencias/${t.id}/atender">
+                   <button>Atender</button>
+                 </form>`
+              : "-"
+          }
+        </td>
+      </tr>`
+    )
     .join("");
 
   res.send(`
-    <!DOCTYPE html>
-    <html lang="pt-BR">
-    <head>
-      <meta charset="UTF-8" />
-      <title>Dashboard - JD Advogados</title>
-      <style>
-        body {
-          font-family: Arial, sans-serif;
-          background: #f5f5f5;
-          margin: 0;
-          padding: 0;
-        }
-        header {
-          background: #1e88e5;
-          color: #fff;
-          padding: 16px 24px;
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-        }
-        header h1 {
-          margin: 0;
-          font-size: 20px;
-        }
-        header a {
-          color: #fff;
-          text-decoration: none;
-          font-size: 14px;
-        }
-        main {
-          padding: 24px;
-        }
-        table {
-          width: 100%;
-          border-collapse: collapse;
-          background: #fff;
-          border-radius: 8px;
-          overflow: hidden;
-        }
-        th, td {
-          padding: 8px 10px;
-          border-bottom: 1px solid #eee;
-          font-size: 13px;
-          vertical-align: top;
-        }
-        th {
-          background: #f0f0f0;
-          text-align: left;
-        }
-        tr:hover {
-          background: #fafafa;
-        }
-        button {
-          padding: 6px 10px;
-          background: #2e7d32;
-          color: #fff;
-          border: none;
-          border-radius: 4px;
-          cursor: pointer;
-          font-size: 12px;
-        }
-        button:hover {
-          background: #1b5e20;
-        }
-      </style>
-    </head>
-    <body>
-      <header>
-        <h1>Painel de Transferências - JD Advogados</h1>
-        <a href="/logout">Sair</a>
-      </header>
-      <main>
-        <p style="color:#2e7d32;font-size:13px;margin-top:0;">
-          WhatsApp conectado. Abaixo estão as transferências solicitadas pela IA.
-        </p>
-        <h2>Transferências solicitadas pela IA</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>Nome</th>
-              <th>Número</th>
-              <th>Data/Hora</th>
-              <th>Mensagem</th>
-              <th>Motivo</th>
-              <th>Status</th>
-              <th>Ação</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${
-              linhas ||
-              `<tr><td colspan="8">Nenhuma transferência registrada.</td></tr>`
-            }
-          </tbody>
-        </table>
-      </main>
-    </body>
-    </html>
+    <h2>Painel</h2>
+    <table border="1" cellpadding="5">
+      <tr>
+        <th>ID</th><th>Nome</th><th>Número</th><th>Data</th>
+        <th>Mensagem</th><th>Motivo</th><th>Status</th><th>Ação</th>
+      </tr>
+      ${linhas}
+    </table>
   `);
 });
+
 // =========================
-// Rota: Marcar transferência como atendida
+// Marcar como atendido
 // =========================
 app.post("/transferencias/:id/atender", requireLogin, (req, res) => {
-  const { id } = req.params;
-  const ok = marcarTransferenciaComoAtendida(id);
-  if (!ok) {
-    console.warn(
-      `Não foi possível marcar transferência ${id} como atendida.`
-    );
-  }
+  marcarTransferenciaComoAtendida(req.params.id);
   res.redirect("/dashboard");
 });
 
 // =========================
-// Rota básica de saúde
+// Rota raiz
 // =========================
 app.get("/", (req, res) => {
-  res.send("Bot JD Advogados rodando. Acesse /login para o painel.");
+  res.send("Bot JD Advogados rodando. Acesse /login");
 });
 
 // =========================
 // Inicialização
 // =========================
 app.listen(PORT, () => {
-  console.log(`🚀 Servidor Express rodando na porta ${PORT}`);
+  console.log(`🚀 Servidor rodando na porta ${PORT}`);
 });
 
-iniciarWhatsApp().catch((err) => {
-  console.error("Erro ao iniciar WhatsApp:", err);
-});
+iniciarWhatsApp().catch((err) =>
+  console.error("Erro ao iniciar WhatsApp:", err)
+);
