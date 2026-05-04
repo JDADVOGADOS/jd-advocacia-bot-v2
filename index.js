@@ -190,7 +190,7 @@ async function getAIResponse(customerId, customerMessage) {
       const inicio = Date.now();
 
       const response = await anthropic.messages.create({
-        model: "claude-3-sonnet-20240229",
+        model: "claude-3-5-sonnet-latest",
         max_tokens: 1024,
         system: BOT_CONFIG.systemPrompt,
         messages: history.map(h => ({ role: h.role, content: h.content }))
