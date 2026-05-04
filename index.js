@@ -150,7 +150,24 @@ async function getAIResponse(customerId, customerMessage) {
 
   // GEMINI ATUALIZADO
   async function tentarGemini() {
-  if (!GEMINI_API_KEY) return null;  // <--- ADICIONE ESTA LINHA
+  if (!GEMINI_API_KEY) return null;
+
+  const inicio = Date.now();
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key=${GEMINI_API_KEY}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        system_instruction: { role: "system", parts: [{ text: BOT_CONFIG.systemPrompt }] },
+        contents: history.map(h => ({
+          role: h.role === "assistant" ? "model" : "user",
+          parts: [{ text: h.content }]
+        }))
+      })
+    }
+  );
+
 
     try {
       const inicio = Date.now();
