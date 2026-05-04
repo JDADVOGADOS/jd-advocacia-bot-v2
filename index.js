@@ -5,12 +5,12 @@ const path = require("path");
 // LIMPA auth_info ANTES DE QUALQUER OUTRA COISA
 // =========================
 try {
-  if (fs.existsSync("auth_info")) {
-    console.log("⚠️ Removendo pasta auth_info para forçar QR...");
-    fs.rmSync("auth_info", { recursive: true, force: true });
+  if (fs.existsSync("/tmp/auth_info")) {
+    console.log("⚠️ Removendo /tmp/auth_info para forçar QR...");
+    fs.rmSync("/tmp/auth_info", { recursive: true, force: true });
   }
 } catch (err) {
-  console.log("Não foi possível remover auth_info, continuando mesmo assim.");
+  console.log("Não foi possível remover /tmp/auth_info, continuando mesmo assim.");
 }
 
 // =========================
@@ -183,13 +183,16 @@ async function iniciarWhatsApp() {
   const { state, saveCreds } = await useMultiFileAuthState("/tmp/auth_info");
 
   sock = makeWASocket({
-  auth: state,
-  printQRInTerminal: false,
-  browser: ["JDAdvogados", "Chrome", "1.0"],
+    auth: state,
+    printQRInTerminal: false,
+    browser: ["JDAdvogados", "Chrome", "1.0"],
 
-  // VERSÃO CORRETA DO WHATSAPP WEB
-  version: [2, 2413, 51]
-});
+    // VERSÃO CORRETA DO WHATSAPP WEB
+    version: [2, 2413, 51],
+
+    // ESSENCIAL PARA FORÇAR QR EM SERVIDORES CLOUD
+    syncFullHistory: false
+  });
 
   sock.ev.on("creds.update", saveCreds);
 
