@@ -29,14 +29,21 @@ const SMTP_USER = process.env.SMTP_USER;
 const SMTP_PASS = process.env.SMTP_PASS;
 
 // WhatsApp do advogado (formato internacional sem +)
-const ADVOGADO_WA = "5565999102630@s.whatsapp.net";
+const ADVOGADO_WA =
+  process.env.ADVOGADO_WA || "5565999102630@s.whatsapp.net";
 
 // Arquivo JSON de transferências
 const TRANSFERENCIAS_FILE = path.join(__dirname, "transferencias.json");
 
 // Usuário e senha do painel
-const ADMIN_USER = "juliandavis";
-const ADMIN_PASS = "30866173";
+const ADMIN_USER = process.env.ADMIN_USER || "juliandavis";
+const ADMIN_PASS = process.env.ADMIN_PASS || "30866173";
+
+// =========================
+// Estado global
+// =========================
+let sock;
+let ultimoQR = null;
 
 // =========================
 // Inicialização do Express
@@ -109,7 +116,7 @@ function marcarTransferenciaComoAtendida(id) {
 }
 
 // =========================
-// Nodemailer (e-mail)
+ // Nodemailer (e-mail)
 // =========================
 const transporter = nodemailer.createTransport({
   host: SMTP_HOST,
@@ -158,8 +165,6 @@ async function enviarEmailTransferencia(transferencia) {
 // =========================
 // WhatsApp (Baileys)
 // =========================
-let sock;
-
 async function iniciarWhatsApp() {
   const { state, saveCreds } = await useMultiFileAuthState("auth_info");
   sock = makeWASocket({
@@ -170,7 +175,13 @@ async function iniciarWhatsApp() {
   sock.ev.on("creds.update", saveCreds);
 
   sock.ev.on("connection.update", (update) => {
-    const { connection, lastDisconnect } = update;
+    const { connection, lastDisconnect, qr } = update;
+
+    if (qr) {
+      console.log("QR Code gerado!");
+      ultimoQR = qr;
+    }
+
     if (connection === "close") {
       const shouldReconnect =
         lastDisconnect?.error?.output?.statusCode !==
@@ -181,6 +192,7 @@ async function iniciarWhatsApp() {
       }
     } else if (connection === "open") {
       console.log("✅ WhatsApp conectado.");
+      ultimoQR = null;
     }
   });
 
@@ -223,7 +235,9 @@ async function iniciarWhatsApp() {
 
 async function enviarWhatsAppParaAdvogado(transferencia) {
   if (!sock) {
-    console.warn("⚠️ Socket WhatsApp não inicializado. Não foi possível enviar ao advogado.");
+    console.warn(
+      "⚠️ Socket WhatsApp não inicializado. Não foi possível enviar ao advogado."
+    );
     return;
   }
 
@@ -243,7 +257,9 @@ async function enviarWhatsAppParaAdvogado(transferencia) {
 
   try {
     await sock.sendMessage(ADVOGADO_WA, { text: texto });
-    console.log("📲 Mensagem de transferência enviada ao advogado no WhatsApp.");
+    console.log(
+      "📲 Mensagem de transferência enviada ao advogado no WhatsApp."
+    );
   } catch (err) {
     console.error("Erro ao enviar WhatsApp para advogado:", err);
   }
@@ -278,7 +294,8 @@ async function chamarGemini(prompt) {
 
     const data = await resp.json();
     const texto =
-      data?.candidates?.[0]?.content?.parts?.[0]?.text || "Desculpe, tive um problema ao responder.";
+      data?.candidates?.[0]?.content?.parts?.[0]?.text ||
+      "Desculpe, tive um problema ao responder.";
     return { modelo: "GEMINI", texto };
   } catch (err) {
     console.error("Erro ao chamar Gemini:", err);
@@ -315,7 +332,8 @@ async function chamarClaude(prompt) {
 
     const data = await resp.json();
     const texto =
-      data?.content?.[0]?.text || "Desculpe, tive um problema ao responder.";
+      data?.content?.[0]?.text ||
+      "Desculpe, tive um problema ao responder.";
     return { modelo: "CLAUDE", texto };
   } catch (err) {
     console.error("Erro ao chamar Claude:", err);
@@ -339,9 +357,7 @@ async function processarMensagemIA(numero, mensagem) {
     console.log(`⚖️ Tipo de mensagem: ${tipo}`);
 
     let respostaIA = null;
-    let modeloUsado = null;
 
-    // Prioridade: Gemini para simples, Claude para complexas
     if (tipo === "simples") {
       respostaIA = await chamarGemini(mensagem);
       if (!respostaIA) {
@@ -363,8 +379,7 @@ async function processarMensagemIA(numero, mensagem) {
       };
     }
 
-    modeloUsado = respostaIA.modelo;
-    console.log(`✅ Resposta gerada por: ${modeloUsado}`);
+    console.log(`✅ Resposta gerada por: ${respostaIA.modelo}`);
 
     const { textoLimpo, transferirHumano } = analisarTransferencia(
       respostaIA.texto
@@ -502,6 +517,26 @@ app.get("/logout", (req, res) => {
 });
 
 // =========================
+// Rota: QR Code para o painel
+// =========================
+app.get("/qr", requireLogin, (req, res) => {
+  if (!ultimoQR) {
+    return res.send(`
+      <div style="font-family:Arial;padding:20px;">
+        <h3>Aguardando geração do QR Code...</h3>
+        <p>Se o QR não aparecer em alguns segundos, clique em "Redeploy" no Railway para reiniciar o bot.</p>
+      </div>
+    `);
+  }
+
+  res.send(`
+    <div style="font-family: monospace; white-space: pre; padding: 20px;">
+${ultimoQR}
+    </div>
+  `);
+});
+
+// =========================
 // Rota: Dashboard
 // =========================
 app.get("/dashboard", requireLogin, (req, res) => {
@@ -512,10 +547,8 @@ app.get("/dashboard", requireLogin, (req, res) => {
   const linhas = transferencias
     .map((t) => {
       const data = new Date(t.criadoEm).toLocaleString("pt-BR");
-      const statusCor =
-        t.status === "pendente" ? "#c62828" : "#2e7d32";
-      const statusTexto =
-        t.status === "pendente" ? "Pendente" : "Atendido";
+      const statusCor = t.status === "pendente" ? "#c62828" : "#2e7d32";
+      const statusTexto = t.status === "pendente" ? "Pendente" : "Atendido";
 
       return `
         <tr>
@@ -605,6 +638,9 @@ app.get("/dashboard", requireLogin, (req, res) => {
         button:hover {
           background: #1b5e20;
         }
+        iframe {
+          background: #fff;
+        }
       </style>
     </head>
     <body>
@@ -613,6 +649,11 @@ app.get("/dashboard", requireLogin, (req, res) => {
         <a href="/logout">Sair</a>
       </header>
       <main>
+        <h2>QR Code do WhatsApp</h2>
+        <p>Escaneie o QR abaixo com o WhatsApp do escritório para conectar o bot.</p>
+        <iframe src="/qr" style="width:100%;height:260px;border:1px solid #ccc;border-radius:6px;"></iframe>
+        <hr><br>
+
         <h2>Transferências solicitadas pela IA</h2>
         <table>
           <thead>
@@ -628,7 +669,10 @@ app.get("/dashboard", requireLogin, (req, res) => {
             </tr>
           </thead>
           <tbody>
-            ${linhas || `<tr><td colspan="8">Nenhuma transferência registrada.</td></tr>`}
+            ${
+              linhas ||
+              `<tr><td colspan="8">Nenhuma transferência registrada.</td></tr>`
+            }
           </tbody>
         </table>
       </main>
@@ -644,7 +688,9 @@ app.post("/transferencias/:id/atender", requireLogin, (req, res) => {
   const { id } = req.params;
   const ok = marcarTransferenciaComoAtendida(id);
   if (!ok) {
-    console.warn(`Não foi possível marcar transferência ${id} como atendida.`);
+    console.warn(
+      `Não foi possível marcar transferência ${id} como atendida.`
+    );
   }
   res.redirect("/dashboard");
 });
@@ -663,7 +709,6 @@ app.listen(PORT, () => {
   console.log(`🚀 Servidor Express rodando na porta ${PORT}`);
 });
 
-// Inicia o WhatsApp
 iniciarWhatsApp().catch((err) => {
   console.error("Erro ao iniciar WhatsApp:", err);
 });
