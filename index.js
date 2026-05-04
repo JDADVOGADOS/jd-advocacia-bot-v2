@@ -1,4 +1,19 @@
 // =========================
+// LIMPA auth_info ANTES DE QUALQUER COISA
+// =========================
+const fs = require("fs");
+const path = require("path");
+
+try {
+  if (fs.existsSync("auth_info")) {
+    console.log("⚠️ Removendo pasta auth_info para forçar QR...");
+    fs.rmSync("auth_info", { recursive: true, force: true });
+  }
+} catch (err) {
+  console.log("Não foi possível remover auth_info, continuando mesmo assim.");
+}
+
+// =========================
 // Imports básicos
 // =========================
 const fs = require("fs");
@@ -9,6 +24,11 @@ const bodyParser = require("body-parser");
 const nodemailer = require("nodemailer");
 const { Boom } = require("@hapi/boom");
 const makeWASocket = require("@whiskeysockets/baileys").default;
+const {
+  useMultiFileAuthState,
+  DisconnectReason,
+} = require("@whiskeysockets/baileys");
+;
 const {
   useMultiFileAuthState,
   DisconnectReason,
