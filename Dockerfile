@@ -1,9 +1,7 @@
 FROM node:20-slim
 
-# Melhor performance e menos lixo
 ENV NODE_ENV=production
 
-# Instala dependências essenciais para o Baileys
 RUN apt-get update && apt-get install -y \
     openssl \
     git \
@@ -12,15 +10,14 @@ RUN apt-get update && apt-get install -y \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-RUN mkdir -p /app/auth_info
 
-
-# Copia apenas o necessário para instalar dependências
+# Copia package.json e package-lock.json
 COPY package*.json ./
 
+# Instala dependências
 RUN npm install --omit=dev
 
-# Copia o restante do projeto
+# Copia TODO o projeto (sem cache)
 COPY . .
 
 EXPOSE 8080
