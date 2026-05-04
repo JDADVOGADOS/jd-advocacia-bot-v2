@@ -1,5 +1,3 @@
-// index.js
-
 // =========================
 // Imports básicos
 // =========================
@@ -28,7 +26,7 @@ const SMTP_PORT = process.env.SMTP_PORT;
 const SMTP_USER = process.env.SMTP_USER;
 const SMTP_PASS = process.env.SMTP_PASS;
 
-// WhatsApp do advogado (formato internacional sem +)
+// WhatsApp do advogado
 const ADVOGADO_WA =
   process.env.ADVOGADO_WA || "5565999102630@s.whatsapp.net";
 
@@ -46,6 +44,18 @@ let sock;
 let ultimoQR = null;
 
 // =========================
+// Limpeza automática da pasta auth_info
+// =========================
+try {
+  if (fs.existsSync("auth_info")) {
+    console.log("⚠️ Removendo pasta auth_info para forçar QR...");
+    fs.rmSync("auth_info", { recursive: true, force: true });
+  }
+} catch (err) {
+  console.log("Não foi possível remover auth_info, continuando mesmo assim.");
+}
+
+// =========================
 // Inicialização do Express
 // =========================
 const app = express();
@@ -61,10 +71,10 @@ app.use(
     saveUninitialized: false,
   })
 );
-
 // =========================
 // Funções auxiliares: JSON de transferências
 // =========================
+
 function carregarTransferencias() {
   try {
     if (!fs.existsSync(TRANSFERENCIAS_FILE)) {
@@ -116,7 +126,7 @@ function marcarTransferenciaComoAtendida(id) {
 }
 
 // =========================
- // Nodemailer (e-mail)
+// Nodemailer (e-mail)
 // =========================
 const transporter = nodemailer.createTransport({
   host: SMTP_HOST,
@@ -163,13 +173,15 @@ async function enviarEmailTransferencia(transferencia) {
 }
 
 // =========================
-// WhatsApp (Baileys)
+// WhatsApp (Baileys) com QR forçado
 // =========================
 async function iniciarWhatsApp() {
   const { state, saveCreds } = await useMultiFileAuthState("auth_info");
+
   sock = makeWASocket({
-    printQRInTerminal: true,
     auth: state,
+    printQRInTerminal: false, // vamos capturar o QR manualmente
+    browser: ["JDAdvogados", "Chrome", "1.0"], // força modo QR
   });
 
   sock.ev.on("creds.update", saveCreds);
@@ -178,7 +190,7 @@ async function iniciarWhatsApp() {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
-      console.log("QR Code gerado!");
+      console.log("🔥 QR Code gerado!");
       ultimoQR = qr;
     }
 
@@ -192,7 +204,7 @@ async function iniciarWhatsApp() {
       }
     } else if (connection === "open") {
       console.log("✅ WhatsApp conectado.");
-      ultimoQR = null;
+      ultimoQR = null; // limpa o QR quando conecta
     }
   });
 
@@ -264,7 +276,6 @@ async function enviarWhatsAppParaAdvogado(transferencia) {
     console.error("Erro ao enviar WhatsApp para advogado:", err);
   }
 }
-
 // =========================
 // IA: Gemini + Claude
 // =========================
@@ -395,7 +406,6 @@ async function processarMensagemIA(numero, mensagem) {
     };
   }
 }
-
 // =========================
 // Middleware de autenticação do painel
 // =========================
@@ -537,13 +547,73 @@ ${ultimoQR}
 });
 
 // =========================
-// Rota: Dashboard
+// Rota: Dashboard (só libera painel completo após conexão)
 // =========================
 app.get("/dashboard", requireLogin, (req, res) => {
   const transferencias = carregarTransferencias().sort(
     (a, b) => new Date(b.criadoEm) - new Date(a.criadoEm)
   );
 
+  // Se ainda existe QR, significa que NÃO conectou ainda → mostra só a tela de conexão
+  if (ultimoQR) {
+    return res.send(`
+      <!DOCTYPE html>
+      <html lang="pt-BR">
+      <head>
+        <meta charset="UTF-8" />
+        <title>Conectar WhatsApp - JD Advogados</title>
+        <style>
+          body {
+            font-family: Arial, sans-serif;
+            background: #f5f5f5;
+            margin: 0;
+            padding: 0;
+          }
+          header {
+            background: #1e88e5;
+            color: #fff;
+            padding: 16px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+          }
+          header h1 {
+            margin: 0;
+            font-size: 20px;
+          }
+          header a {
+            color: #fff;
+            text-decoration: none;
+            font-size: 14px;
+          }
+          main {
+            padding: 24px;
+          }
+          iframe {
+            background: #fff;
+            border-radius: 8px;
+          }
+        </style>
+      </head>
+      <body>
+        <header>
+          <h1>Conectar WhatsApp - JD Advogados</h1>
+          <a href="/logout">Sair</a>
+        </header>
+        <main>
+          <h2>QR Code do WhatsApp</h2>
+          <p>Escaneie o QR abaixo com o WhatsApp do escritório para conectar o bot.</p>
+          <iframe src="/qr" style="width:100%;height:260px;border:1px solid #ccc;border-radius:6px;"></iframe>
+          <p style="margin-top:16px;color:#555;font-size:13px;">
+            Assim que o WhatsApp conectar, esta tela será substituída pelo painel de transferências.
+          </p>
+        </main>
+      </body>
+      </html>
+    `);
+  }
+
+  // Se NÃO há QR, consideramos que o WhatsApp está conectado → mostra painel completo
   const linhas = transferencias
     .map((t) => {
       const data = new Date(t.criadoEm).toLocaleString("pt-BR");
@@ -638,9 +708,6 @@ app.get("/dashboard", requireLogin, (req, res) => {
         button:hover {
           background: #1b5e20;
         }
-        iframe {
-          background: #fff;
-        }
       </style>
     </head>
     <body>
@@ -649,11 +716,9 @@ app.get("/dashboard", requireLogin, (req, res) => {
         <a href="/logout">Sair</a>
       </header>
       <main>
-        <h2>QR Code do WhatsApp</h2>
-        <p>Escaneie o QR abaixo com o WhatsApp do escritório para conectar o bot.</p>
-        <iframe src="/qr" style="width:100%;height:260px;border:1px solid #ccc;border-radius:6px;"></iframe>
-        <hr><br>
-
+        <p style="color:#2e7d32;font-size:13px;margin-top:0;">
+          WhatsApp conectado. Abaixo estão as transferências solicitadas pela IA.
+        </p>
         <h2>Transferências solicitadas pela IA</h2>
         <table>
           <thead>
@@ -680,7 +745,6 @@ app.get("/dashboard", requireLogin, (req, res) => {
     </html>
   `);
 });
-
 // =========================
 // Rota: Marcar transferência como atendida
 // =========================
