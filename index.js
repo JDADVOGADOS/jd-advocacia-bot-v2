@@ -1,370 +1,669 @@
-require("dotenv").config();
+// index.js
 
+// =========================
+// Imports básicos
+// =========================
+const fs = require("fs");
+const path = require("path");
+const express = require("express");
+const session = require("express-session");
+const bodyParser = require("body-parser");
+const nodemailer = require("nodemailer");
+const { Boom } = require("@hapi/boom");
+const makeWASocket = require("@whiskeysockets/baileys").default;
 const {
-  default: makeWASocket,
   useMultiFileAuthState,
   DisconnectReason,
-  fetchLatestBaileysVersion,
-  makeCacheableSignalKeyStore,
-  getContentType
 } = require("@whiskeysockets/baileys");
 
-const Anthropic = require("@anthropic-ai/sdk");
-const qrcode = require("qrcode-terminal");
-const QRCode = require("qrcode");
-const http = require("http");
-const pino = require("pino");
+// =========================
+// Variáveis de ambiente
+// =========================
+require("dotenv").config();
 
-// IA
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const CLAUDE_API_KEY = process.env.ANTHROPIC_API_KEY;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
+const SMTP_HOST = process.env.SMTP_HOST;
+const SMTP_PORT = process.env.SMTP_PORT;
+const SMTP_USER = process.env.SMTP_USER;
+const SMTP_PASS = process.env.SMTP_PASS;
 
-if (!GEMINI_API_KEY) {
-  console.warn("⚠️ GEMINI_API_KEY não encontrada! O bot funcionará apenas com Claude.");
+// WhatsApp do advogado (formato internacional sem +)
+const ADVOGADO_WA = "5565999102630@s.whatsapp.net";
+
+// Arquivo JSON de transferências
+const TRANSFERENCIAS_FILE = path.join(__dirname, "transferencias.json");
+
+// Usuário e senha do painel
+const ADMIN_USER = "juliandavis";
+const ADMIN_PASS = "30866173";
+
+// =========================
+// Inicialização do Express
+// =========================
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.use(bodyParser.urlencoded({ extended: true }));
+app.use(bodyParser.json());
+
+app.use(
+  session({
+    secret: "jdadvogados-secret-session",
+    resave: false,
+    saveUninitialized: false,
+  })
+);
+
+// =========================
+// Funções auxiliares: JSON de transferências
+// =========================
+function carregarTransferencias() {
+  try {
+    if (!fs.existsSync(TRANSFERENCIAS_FILE)) {
+      fs.writeFileSync(TRANSFERENCIAS_FILE, JSON.stringify([]));
+      return [];
+    }
+    const data = fs.readFileSync(TRANSFERENCIAS_FILE, "utf8");
+    return JSON.parse(data || "[]");
+  } catch (err) {
+    console.error("Erro ao carregar transferencias.json:", err);
+    return [];
+  }
 }
 
-
-const anthropic = CLAUDE_API_KEY ? new Anthropic({ apiKey: CLAUDE_API_KEY }) : null;
-
-// Histórico
-const conversationHistory = new Map();
-let currentQRUrl = null;
-let botOnline = false;
-
-const modeloStats = {
-  gemini: { total: 0, count: 0 },
-  claude: { total: 0, count: 0 },
-};
-
-function registrarLatencia(modelo, ms) {
-  modeloStats[modelo].total += ms;
-  modeloStats[modelo].count++;
+function salvarTransferencias(lista) {
+  try {
+    fs.writeFileSync(TRANSFERENCIAS_FILE, JSON.stringify(lista, null, 2));
+  } catch (err) {
+    console.error("Erro ao salvar transferencias.json:", err);
+  }
 }
 
-function modeloMaisRapido() {
-  const g = modeloStats.gemini;
-  const c = modeloStats.claude;
-  const gemAvg = g.count ? g.total / g.count : Infinity;
-  const claAvg = c.count ? c.total / c.count : Infinity;
-  return gemAvg <= claAvg ? "gemini" : "claude";
+function registrarTransferencia({ numero, nome, mensagem, motivo }) {
+  const lista = carregarTransferencias();
+  const nova = {
+    id: Date.now().toString(),
+    numero,
+    nome: nome || "Não informado",
+    mensagem,
+    motivo: motivo || "Solicitação da IA",
+    status: "pendente",
+    criadoEm: new Date().toISOString(),
+  };
+  lista.push(nova);
+  salvarTransferencias(lista);
+  return nova;
 }
 
-function classificarMensagem(texto) {
-  const simples = ["oi","olá","bom dia","boa tarde","boa noite","tudo bem","como funciona","horário","atendimento"];
-  if (texto.length < 20) return "simples";
-  if (simples.some(p => texto.toLowerCase().includes(p))) return "simples";
-  return "complexa";
+function marcarTransferenciaComoAtendida(id) {
+  const lista = carregarTransferencias();
+  const idx = lista.findIndex((t) => t.id === id);
+  if (idx >= 0) {
+    lista[idx].status = "atendido";
+    lista[idx].atendidoEm = new Date().toISOString();
+    salvarTransferencias(lista);
+    return true;
+  }
+  return false;
 }
 
-const BOT_CONFIG = {
-  businessName: "JD Advocacia",
-  maxHistoryLength: 20,
-  advogadoNumero: process.env.ADVOGADO_NUMERO || "",
-  welcomeMessage:
-    "Olá! 👋 Bem-vindo ao *JD Advocacia*.\n\n" +
-    "Sou o assistente virtual do escritório, especializado em *Direito Empresarial* e *Direito Tributário*.\n\n" +
-    "Como posso te ajudar hoje?",
-  systemPrompt: `Você é o assistente virtual do escritório JD Advocacia, especializado em Direito Empresarial e Direito Tributário.
+// =========================
+// Nodemailer (e-mail)
+// =========================
+const transporter = nodemailer.createTransport({
+  host: SMTP_HOST,
+  port: Number(SMTP_PORT || 465),
+  secure: true,
+  auth: {
+    user: SMTP_USER,
+    pass: SMTP_PASS,
+  },
+});
 
-SOBRE O ESCRITÓRIO:
-- Especialidades: Direito Empresarial e Direito Tributário
-- Atendimento: de segunda a sexta, das 8h às 18h
-
-COMO VOCÊ DEVE SE COMPORTAR:
-- Seja cordial, profissional e objetivo
-- Responda sempre em português do Brasil
-- Use linguagem acessível
-- Nunca dê pareceres jurídicos
-- Mantenha respostas curtas
-
-TRANSFERÊNCIA PARA HUMANO:
-- Se o cliente insistir em detalhes de um caso específico, quiser falar com o advogado, ou você não souber responder, diga que vai transferir para um atendente e termine sua resposta com a palavra TRANSFERIR_HUMANO`,
-};
-
-// Servidor Web
-const server = http.createServer((req, res) => {
-  res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-
-  if (botOnline) {
-    res.end(`
-      <html><body style="display:flex;align-items:center;justify-content:center;min-height:100vh;background:#f5f5f5;font-family:sans-serif">
-        <div style="background:white;padding:2rem;border-radius:16px;box-shadow:0 4px 20px rgba(0,0,0,0.1);text-align:center">
-          <h2 style="color:#128C7E">🤖 Bot Online!</h2>
-          <p>O assistente virtual do JD Advocacia está ativo.</p>
-        </div>
-      </body></html>
-    `);
+async function enviarEmailTransferencia(transferencia) {
+  if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
+    console.warn("⚠️ SMTP não configurado. E-mail não será enviado.");
     return;
   }
 
-  if (currentQRUrl) {
-    res.end(`
-      <html><body style="display:flex;align-items:center;justify-content:center;min-height:100vh;background:#f5f5f5;font-family:sans-serif">
-        <div style="background:white;padding:2rem;border-radius:16px;box-shadow:0 4px 20px rgba(0,0,0,0.1);text-align:center">
-          <h2 style="color:#128C7E">📱 Escaneie o QR Code</h2>
-          <img src="${currentQRUrl}" width="260" />
-        </div>
-      </body></html>
-    `);
-    return;
-  }
+  const { numero, nome, mensagem, motivo, criadoEm } = transferencia;
 
-  res.end(`
-    <html><body style="display:flex;align-items:center;justify-content:center;min-height:100vh;background:#f5f5f5;font-family:sans-serif">
-      <div style="background:white;padding:2rem;border-radius:16px;box-shadow:0 4px 20px rgba(0,0,0,0.1);text-align:center">
-        <h2 style="color:#128C7E">⏳ Iniciando...</h2>
-        <p>Aguarde o QR Code aparecer.</p>
-      </div>
-    </body></html>
-  `);
-});
-
-server.listen(process.env.PORT || 8080, () => {
-  console.log(`🌐 Servidor web ativo na porta ${process.env.PORT || 8080}`);
-});
-
-// IA
-async function getAIResponse(customerId, customerMessage) {
-  if (!conversationHistory.has(customerId)) {
-    conversationHistory.set(customerId, []);
-  }
-
-  const history = conversationHistory.get(customerId);
-
-  history.push({ role: "user", content: customerMessage });
-
-  if (history.length > BOT_CONFIG.maxHistoryLength) {
-    history.splice(0, history.length - BOT_CONFIG.maxHistoryLength);
-  }
-
-  const saveReply = (reply) => {
-    history.push({ role: "assistant", content: reply });
+  const mailOptions = {
+    from: `"JD Advogados - Bot" <${SMTP_USER}>`,
+    to: "julian@jdadvogados.adv.br",
+    subject: "Cliente solicitou atendimento humano",
+    html: `
+      <h2>Atendimento humano solicitado</h2>
+      <p><strong>Nome:</strong> ${nome}</p>
+      <p><strong>Número:</strong> ${numero}</p>
+      <p><strong>Mensagem:</strong> ${mensagem}</p>
+      <p><strong>Motivo:</strong> ${motivo}</p>
+      <p><strong>Data/Hora:</strong> ${new Date(criadoEm).toLocaleString(
+        "pt-BR"
+      )}</p>
+      <hr/>
+      <p>Este e-mail foi gerado automaticamente pelo sistema JD Advogados.</p>
+    `,
   };
 
-  const tipo = classificarMensagem(customerMessage);
-  let prioridade = tipo === "simples" ? "gemini" : "claude";
-  const maisRapido = modeloMaisRapido();
-  if (maisRapido !== prioridade) prioridade = maisRapido;
-
-  console.log(`⚖️ Modelo escolhido: ${prioridade.toUpperCase()} (tipo: ${tipo})`);
-
-  // GEMINI ATUALIZADO
-  async function tentarGemini() {
-  if (!GEMINI_API_KEY) return null;
-
-  const inicio = Date.now();
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key=${GEMINI_API_KEY}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        system_instruction: { role: "system", parts: [{ text: BOT_CONFIG.systemPrompt }] },
-        contents: history.map(h => ({
-          role: h.role === "assistant" ? "model" : "user",
-          parts: [{ text: h.content }]
-        }))
-      })
-    }
-  );
-
-
-    try {
-      const inicio = Date.now();
-
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key=${GEMINI_API_KEY}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            system_instruction: { role: "system", parts: [{ text: BOT_CONFIG.systemPrompt }] },
-            contents: history.map(h => ({
-              role: h.role === "assistant" ? "model" : "user",
-              parts: [{ text: h.content }]
-            }))
-          })
-        }
-      );
-
-      const data = await response.json();
-      registrarLatencia("gemini", Date.now() - inicio);
-
-      if (!data?.candidates?.[0]?.content?.parts?.[0]?.text) {
-        console.error("❌ Erro no Gemini:", data);
-        return null;
-      }
-
-      return data.candidates[0].content.parts[0].text;
-    } catch (e) {
-      console.error("❌ Falha no Gemini:", e);
-      return null;
-    }
-  }
-
-  async function tentarClaude() {
-    if (!anthropic) return null;
-
-    try {
-      const inicio = Date.now();
-
-      const response = await anthropic.messages.create({
-        model: "claude-sonnet-4-6",
-        max_tokens: 1024,
-        system: BOT_CONFIG.systemPrompt,
-        messages: history.map(h => ({ role: h.role, content: h.content }))
-      });
-
-      registrarLatencia("claude", Date.now() - inicio);
-      return response.content[0].text;
-    } catch (e) {
-      console.error("❌ Falha no Claude:", e);
-      return null;
-    }
-  }
-
-  const ordem = prioridade === "gemini"
-    ? [tentarGemini, tentarClaude]
-    : [tentarClaude, tentarGemini];
-
-  for (const tentativa of ordem) {
-    const resposta = await tentativa();
-    if (resposta) {
-      saveReply(resposta);
-      return resposta;
-    }
-  }
-
-  return "Desculpe, estou com instabilidade no momento. Tente novamente em instantes.";
-}
-
-// Extrair texto
-function extrairTexto(message) {
-  const m = message.message;
-  if (!m) return "";
-
-  if (m.conversation) return m.conversation;
-  if (m.extendedTextMessage?.text) return m.extendedTextMessage.text;
-
-  const tipos = [
-    "imageMessage","videoMessage","documentMessage",
-    "audioMessage","buttonsResponseMessage","listResponseMessage",
-    "templateMessage"
-  ];
-
-  for (const tipo of tipos) {
-    if (m[tipo]?.caption) return m[tipo].caption;
-    if (m[tipo]?.text) return m[tipo].text;
-  }
-
   try {
-    const contentType = getContentType(m);
-    if (contentType && m[contentType]) {
-      return m[contentType]?.text ||
-             m[contentType]?.caption ||
-             m[contentType]?.conversation ||
-             "";
-    }
-  } catch {}
-
-  return "";
-}
-
-// Remetente compatível com Business
-function obterRemetente(message) {
-  const jid = message.key.remoteJid;
-
-  if (jid.includes("@lid")) {
-    return (
-      message.key.participant ||
-      message.key.sender ||
-      message.key.senderPn ||
-      jid
-    );
+    await transporter.sendMail(mailOptions);
+    console.log("📧 E-mail de transferência enviado para o advogado.");
+  } catch (err) {
+    console.error("Erro ao enviar e-mail de transferência:", err);
   }
-
-  return jid;
 }
 
-// Iniciar Bot
-async function iniciarBot() {
-  console.log(`\n🤖 Iniciando Bot WhatsApp + Gemini/Claude...`);
-  console.log(`📋 Empresa: ${BOT_CONFIG.businessName}\n`);
+// =========================
+// WhatsApp (Baileys)
+// =========================
+let sock;
 
+async function iniciarWhatsApp() {
   const { state, saveCreds } = await useMultiFileAuthState("auth_info");
-  const { version } = await fetchLatestBaileysVersion();
-
-  const sock = makeWASocket({
-    version,
-    printQRInTerminal: false,
-    logger: pino({ level: "silent" }),
-    syncFullHistory: true,
-    markOnlineOnConnect: true,
-    auth: {
-      creds: state.creds,
-      keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "silent" })),
-    },
-    getMessage: async () => ({ conversation: "" }),
+  sock = makeWASocket({
+    printQRInTerminal: true,
+    auth: state,
   });
 
   sock.ev.on("creds.update", saveCreds);
 
-  sock.ev.on("connection.update", async (update) => {
-    const { connection, lastDisconnect, qr } = update;
-
-    if (qr) {
-      console.log("\n📱 QR Code gerado!\n");
-      qrcode.generate(qr, { small: true });
-
-      QRCode.toDataURL(qr, (err, url) => {
-        if (!err) {
-          currentQRUrl = url;
-          console.log("✅ QR Code disponível.\n");
-        }
-      });
-    }
-
-    if (connection === "open") {
-      botOnline = true;
-      currentQRUrl = null;
-      console.log(`\n✅ Bot "${BOT_CONFIG.businessName}" está online!\n`);
-    }
-
+  sock.ev.on("connection.update", (update) => {
+    const { connection, lastDisconnect } = update;
     if (connection === "close") {
-      botOnline = false;
-
       const shouldReconnect =
-        lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-
-      console.log("⚠️ Conexão encerrada. Reconectando:", shouldReconnect);
-
+        lastDisconnect?.error?.output?.statusCode !==
+        DisconnectReason.loggedOut;
+      console.log("Conexão fechada. Reconectar:", shouldReconnect);
       if (shouldReconnect) {
-        await new Promise(r => setTimeout(r, 3000));
-        iniciarBot();
-      } else {
-        console.log("❌ Sessão encerrada. Delete a pasta auth_info e reinicie.");
+        iniciarWhatsApp();
       }
+    } else if (connection === "open") {
+      console.log("✅ WhatsApp conectado.");
     }
   });
 
-  sock.ev.on("messages.upsert", async ({ messages, type }) => {
-    if (type !== "notify") return;
+  sock.ev.on("messages.upsert", async (m) => {
+    const msg = m.messages[0];
+    if (!msg.message || msg.key.fromMe) return;
 
-    for (const msg of messages) {
-      if (!msg.message || msg.key.fromMe) continue;
+    const remoteJid = msg.key.remoteJid;
+    const isGroup = remoteJid.endsWith("@g.us");
+    if (isGroup) return;
 
-      const remoteJid = obterRemetente(msg);
-      const texto = extrairTexto(msg);
+    const texto =
+      msg.message.conversation ||
+      msg.message.extendedTextMessage?.text ||
+      "";
 
-      if (!texto.trim()) continue;
+    console.log(`📩 Mensagem recebida de ${remoteJid}: ${texto}`);
 
-      console.log(`📩 Mensagem recebida de ${remoteJid}: "${texto}"`);
+    const resposta = await processarMensagemIA(remoteJid, texto);
 
-      const aiReply = await getAIResponse(remoteJid, texto);
+    if (resposta && resposta.textoLimpo) {
+      await sock.sendMessage(remoteJid, { text: resposta.textoLimpo });
+    }
 
-      await sock.sendMessage(remoteJid, { text: aiReply });
+    if (resposta && resposta.transferirHumano) {
+      console.log("🔄 IA solicitou transferência para humano.");
+
+      const transferencia = registrarTransferencia({
+        numero: remoteJid,
+        nome: "Cliente WhatsApp",
+        mensagem: texto,
+        motivo: "IA retornou TRANSFERIR_HUMANO",
+      });
+
+      await enviarWhatsAppParaAdvogado(transferencia);
+      await enviarEmailTransferencia(transferencia);
     }
   });
 }
 
-iniciarBot();
+async function enviarWhatsAppParaAdvogado(transferencia) {
+  if (!sock) {
+    console.warn("⚠️ Socket WhatsApp não inicializado. Não foi possível enviar ao advogado.");
+    return;
+  }
+
+  const { numero, nome, mensagem, motivo, criadoEm } = transferencia;
+
+  const texto = [
+    "⚠️ *Atendimento humano solicitado!*",
+    "",
+    `*Nome:* ${nome}`,
+    `*Número:* ${numero}`,
+    `*Mensagem:* ${mensagem}`,
+    `*Motivo:* ${motivo}`,
+    `*Data/Hora:* ${new Date(criadoEm).toLocaleString("pt-BR")}`,
+    "",
+    "Acesse o painel para mais detalhes: /dashboard",
+  ].join("\n");
+
+  try {
+    await sock.sendMessage(ADVOGADO_WA, { text: texto });
+    console.log("📲 Mensagem de transferência enviada ao advogado no WhatsApp.");
+  } catch (err) {
+    console.error("Erro ao enviar WhatsApp para advogado:", err);
+  }
+}
+
+// =========================
+// IA: Gemini + Claude
+// =========================
+async function chamarGemini(prompt) {
+  if (!GEMINI_API_KEY) {
+    console.warn("⚠️ GEMINI_API_KEY não encontrada. Ignorando Gemini.");
+    return null;
+  }
+
+  try {
+    console.log("🤖 Chamando Gemini...");
+    const resp = await fetch(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" +
+        GEMINI_API_KEY,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [{ text: prompt }],
+            },
+          ],
+        }),
+      }
+    );
+
+    const data = await resp.json();
+    const texto =
+      data?.candidates?.[0]?.content?.parts?.[0]?.text || "Desculpe, tive um problema ao responder.";
+    return { modelo: "GEMINI", texto };
+  } catch (err) {
+    console.error("Erro ao chamar Gemini:", err);
+    return null;
+  }
+}
+
+async function chamarClaude(prompt) {
+  if (!ANTHROPIC_API_KEY) {
+    console.warn("⚠️ ANTHROPIC_API_KEY não encontrada. Ignorando Claude.");
+    return null;
+  }
+
+  try {
+    console.log("🤖 Chamando Claude Sonnet 4.6...");
+    const resp = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-6",
+        max_tokens: 1024,
+        messages: [
+          {
+            role: "user",
+            content: prompt,
+          },
+        ],
+      }),
+    });
+
+    const data = await resp.json();
+    const texto =
+      data?.content?.[0]?.text || "Desculpe, tive um problema ao responder.";
+    return { modelo: "CLAUDE", texto };
+  } catch (err) {
+    console.error("Erro ao chamar Claude:", err);
+    return null;
+  }
+}
+
+function analisarTransferencia(texto) {
+  if (!texto) return { textoLimpo: "", transferirHumano: false };
+
+  const marcador = "TRANSFERIR_HUMANO";
+  const transferirHumano = texto.includes(marcador);
+  const textoLimpo = texto.replace(marcador, "").trim();
+
+  return { textoLimpo, transferirHumano };
+}
+
+async function processarMensagemIA(numero, mensagem) {
+  try {
+    const tipo = mensagem.length <= 120 ? "simples" : "complexa";
+    console.log(`⚖️ Tipo de mensagem: ${tipo}`);
+
+    let respostaIA = null;
+    let modeloUsado = null;
+
+    // Prioridade: Gemini para simples, Claude para complexas
+    if (tipo === "simples") {
+      respostaIA = await chamarGemini(mensagem);
+      if (!respostaIA) {
+        respostaIA = await chamarClaude(mensagem);
+      }
+    } else {
+      respostaIA = await chamarClaude(mensagem);
+      if (!respostaIA) {
+        respostaIA = await chamarGemini(mensagem);
+      }
+    }
+
+    if (!respostaIA) {
+      console.error("❌ Nenhum modelo respondeu.");
+      return {
+        textoLimpo:
+          "No momento estou com dificuldades técnicas para responder. Tente novamente em instantes.",
+        transferirHumano: false,
+      };
+    }
+
+    modeloUsado = respostaIA.modelo;
+    console.log(`✅ Resposta gerada por: ${modeloUsado}`);
+
+    const { textoLimpo, transferirHumano } = analisarTransferencia(
+      respostaIA.texto
+    );
+
+    return { textoLimpo, transferirHumano };
+  } catch (err) {
+    console.error("Erro em processarMensagemIA:", err);
+    return {
+      textoLimpo:
+        "Ocorreu um erro ao processar sua mensagem. Tente novamente em alguns instantes.",
+      transferirHumano: false,
+    };
+  }
+}
+
+// =========================
+// Middleware de autenticação do painel
+// =========================
+function requireLogin(req, res, next) {
+  if (req.session && req.session.logado) {
+    return next();
+  }
+  return res.redirect("/login");
+}
+
+// =========================
+// Rotas: Login / Logout
+// =========================
+app.get("/login", (req, res) => {
+  const erro = req.query.erro ? "Usuário ou senha inválidos." : "";
+  res.send(`
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+      <meta charset="UTF-8" />
+      <title>Login - JD Advogados</title>
+      <style>
+        body {
+          font-family: Arial, sans-serif;
+          background: #f5f5f5;
+          display: flex;
+          justify-content: center;
+          align-items: center;
+          height: 100vh;
+          margin: 0;
+        }
+        .container {
+          background: #ffffff;
+          padding: 24px 32px;
+          border-radius: 8px;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+          width: 320px;
+        }
+        h1 {
+          margin-top: 0;
+          font-size: 20px;
+          text-align: center;
+        }
+        label {
+          display: block;
+          margin-top: 12px;
+          font-size: 14px;
+        }
+        input[type="text"],
+        input[type="password"] {
+          width: 100%;
+          padding: 8px;
+          margin-top: 4px;
+          border-radius: 4px;
+          border: 1px solid #ccc;
+          box-sizing: border-box;
+        }
+        button {
+          margin-top: 16px;
+          width: 100%;
+          padding: 10px;
+          background: #1e88e5;
+          color: #fff;
+          border: none;
+          border-radius: 4px;
+          cursor: pointer;
+          font-size: 14px;
+        }
+        button:hover {
+          background: #1565c0;
+        }
+        .erro {
+          color: #c62828;
+          font-size: 13px;
+          margin-top: 8px;
+          text-align: center;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <h1>Painel JD Advogados</h1>
+        <form method="POST" action="/login">
+          <label for="usuario">Usuário</label>
+          <input type="text" id="usuario" name="usuario" required />
+
+          <label for="senha">Senha</label>
+          <input type="password" id="senha" name="senha" required />
+
+          <button type="submit">Entrar</button>
+          ${
+            erro
+              ? `<div class="erro">${erro}</div>`
+              : `<div style="margin-top:8px;font-size:12px;color:#777;text-align:center;">
+                  Usuário: <strong>${ADMIN_USER}</strong><br/>
+                  Senha: <strong>${ADMIN_PASS}</strong>
+                 </div>`
+          }
+        </form>
+      </div>
+    </body>
+    </html>
+  `);
+});
+
+app.post("/login", (req, res) => {
+  const { usuario, senha } = req.body;
+  if (usuario === ADMIN_USER && senha === ADMIN_PASS) {
+    req.session.logado = true;
+    return res.redirect("/dashboard");
+  }
+  return res.redirect("/login?erro=1");
+});
+
+app.get("/logout", (req, res) => {
+  req.session.destroy(() => {
+    res.redirect("/login");
+  });
+});
+
+// =========================
+// Rota: Dashboard
+// =========================
+app.get("/dashboard", requireLogin, (req, res) => {
+  const transferencias = carregarTransferencias().sort(
+    (a, b) => new Date(b.criadoEm) - new Date(a.criadoEm)
+  );
+
+  const linhas = transferencias
+    .map((t) => {
+      const data = new Date(t.criadoEm).toLocaleString("pt-BR");
+      const statusCor =
+        t.status === "pendente" ? "#c62828" : "#2e7d32";
+      const statusTexto =
+        t.status === "pendente" ? "Pendente" : "Atendido";
+
+      return `
+        <tr>
+          <td>${t.id}</td>
+          <td>${t.nome}</td>
+          <td>${t.numero}</td>
+          <td>${data}</td>
+          <td>${t.mensagem}</td>
+          <td>${t.motivo}</td>
+          <td style="color:${statusCor};font-weight:bold;">${statusTexto}</td>
+          <td>
+            ${
+              t.status === "pendente"
+                ? `<form method="POST" action="/transferencias/${t.id}/atender" style="margin:0;">
+                     <button type="submit">Marcar como atendido</button>
+                   </form>`
+                : "-"
+            }
+          </td>
+        </tr>
+      `;
+    })
+    .join("");
+
+  res.send(`
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+      <meta charset="UTF-8" />
+      <title>Dashboard - JD Advogados</title>
+      <style>
+        body {
+          font-family: Arial, sans-serif;
+          background: #f5f5f5;
+          margin: 0;
+          padding: 0;
+        }
+        header {
+          background: #1e88e5;
+          color: #fff;
+          padding: 16px 24px;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+        }
+        header h1 {
+          margin: 0;
+          font-size: 20px;
+        }
+        header a {
+          color: #fff;
+          text-decoration: none;
+          font-size: 14px;
+        }
+        main {
+          padding: 24px;
+        }
+        table {
+          width: 100%;
+          border-collapse: collapse;
+          background: #fff;
+          border-radius: 8px;
+          overflow: hidden;
+        }
+        th, td {
+          padding: 8px 10px;
+          border-bottom: 1px solid #eee;
+          font-size: 13px;
+          vertical-align: top;
+        }
+        th {
+          background: #f0f0f0;
+          text-align: left;
+        }
+        tr:hover {
+          background: #fafafa;
+        }
+        button {
+          padding: 6px 10px;
+          background: #2e7d32;
+          color: #fff;
+          border: none;
+          border-radius: 4px;
+          cursor: pointer;
+          font-size: 12px;
+        }
+        button:hover {
+          background: #1b5e20;
+        }
+      </style>
+    </head>
+    <body>
+      <header>
+        <h1>Painel de Transferências - JD Advogados</h1>
+        <a href="/logout">Sair</a>
+      </header>
+      <main>
+        <h2>Transferências solicitadas pela IA</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Nome</th>
+              <th>Número</th>
+              <th>Data/Hora</th>
+              <th>Mensagem</th>
+              <th>Motivo</th>
+              <th>Status</th>
+              <th>Ação</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${linhas || `<tr><td colspan="8">Nenhuma transferência registrada.</td></tr>`}
+          </tbody>
+        </table>
+      </main>
+    </body>
+    </html>
+  `);
+});
+
+// =========================
+// Rota: Marcar transferência como atendida
+// =========================
+app.post("/transferencias/:id/atender", requireLogin, (req, res) => {
+  const { id } = req.params;
+  const ok = marcarTransferenciaComoAtendida(id);
+  if (!ok) {
+    console.warn(`Não foi possível marcar transferência ${id} como atendida.`);
+  }
+  res.redirect("/dashboard");
+});
+
+// =========================
+// Rota básica de saúde
+// =========================
+app.get("/", (req, res) => {
+  res.send("Bot JD Advogados rodando. Acesse /login para o painel.");
+});
+
+// =========================
+// Inicialização
+// =========================
+app.listen(PORT, () => {
+  console.log(`🚀 Servidor Express rodando na porta ${PORT}`);
+});
+
+// Inicia o WhatsApp
+iniciarWhatsApp().catch((err) => {
+  console.error("Erro ao iniciar WhatsApp:", err);
+});
