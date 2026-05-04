@@ -12,24 +12,24 @@ const {
 const Anthropic = require("@anthropic-ai/sdk");
 const qrcode = require("qrcode-terminal");
 const QRCode = require("qrcode");
+const http = require("http");
 const pino = require("pino");
-const nodemailer = require("nodemailer");
 
 // IA
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const CLAUDE_API_KEY = process.env.ANTHROPIC_API_KEY;
-const ADVOGADO_NUMERO = process.env.ADVOGADO_NUMERO;
 
-if (!ADVOGADO_NUMERO) {
-  console.error("❌ ERRO: Variável ADVOGADO_NUMERO não definida.");
+if (!GEMINI_API_KEY) {
+  console.warn("⚠️ GEMINI_API_KEY não encontrada! O bot funcionará apenas com Claude.");
 }
 
 const anthropic = CLAUDE_API_KEY ? new Anthropic({ apiKey: CLAUDE_API_KEY }) : null;
 
 // Histórico
 const conversationHistory = new Map();
+let currentQRUrl = null;
+let botOnline = false;
 
-// Estatísticas
 const modeloStats = {
   gemini: { total: 0, count: 0 },
   claude: { total: 0, count: 0 },
@@ -58,22 +58,71 @@ function classificarMensagem(texto) {
 const BOT_CONFIG = {
   businessName: "JD Advocacia",
   maxHistoryLength: 20,
+  advogadoNumero: process.env.ADVOGADO_NUMERO || "",
+  welcomeMessage:
+    "Olá! 👋 Bem-vindo ao *JD Advocacia*.\n\n" +
+    "Sou o assistente virtual do escritório, especializado em *Direito Empresarial* e *Direito Tributário*.\n\n" +
+    "Como posso te ajudar hoje?",
   systemPrompt: `Você é o assistente virtual do escritório JD Advocacia, especializado em Direito Empresarial e Direito Tributário.
 
-COMPORTAMENTO:
+SOBRE O ESCRITÓRIO:
+- Especialidades: Direito Empresarial e Direito Tributário
+- Atendimento: de segunda a sexta, das 8h às 18h
+
+COMO VOCÊ DEVE SE COMPORTAR:
 - Seja cordial, profissional e objetivo
 - Responda sempre em português do Brasil
-- Nunca dê parecer jurídico
-- Respostas curtas e claras
+- Use linguagem acessível
+- Nunca dê pareceres jurídicos
+- Mantenha respostas curtas
 
-TRANSFERÊNCIA:
-- Se o cliente pedir para falar com o advogado, insistir em detalhes ou você não souber responder, finalize com TRANSFERIR_HUMANO`
+TRANSFERÊNCIA PARA HUMANO:
+- Se o cliente insistir em detalhes de um caso específico, quiser falar com o advogado, ou você não souber responder, diga que vai transferir para um atendente e termine sua resposta com a palavra TRANSFERIR_HUMANO`,
 };
 
-// =========================
-// IA
-// =========================
+// Servidor Web
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
 
+  if (botOnline) {
+    res.end(`
+      <html><body style="display:flex;align-items:center;justify-content:center;min-height:100vh;background:#f5f5f5;font-family:sans-serif">
+        <div style="background:white;padding:2rem;border-radius:16px;box-shadow:0 4px 20px rgba(0,0,0,0.1);text-align:center">
+          <h2 style="color:#128C7E">🤖 Bot Online!</h2>
+          <p>O assistente virtual do JD Advocacia está ativo.</p>
+        </div>
+      </body></html>
+    `);
+    return;
+  }
+
+  if (currentQRUrl) {
+    res.end(`
+      <html><body style="display:flex;align-items:center;justify-content:center;min-height:100vh;background:#f5f5f5;font-family:sans-serif">
+        <div style="background:white;padding:2rem;border-radius:16px;box-shadow:0 4px 20px rgba(0,0,0,0.1);text-align:center">
+          <h2 style="color:#128C7E">📱 Escaneie o QR Code</h2>
+          <img src="${currentQRUrl}" width="260" />
+        </div>
+      </body></html>
+    `);
+    return;
+  }
+
+  res.end(`
+    <html><body style="display:flex;align-items:center;justify-content:center;min-height:100vh;background:#f5f5f5;font-family:sans-serif">
+      <div style="background:white;padding:2rem;border-radius:16px;box-shadow:0 4px 20px rgba(0,0,0,0.1);text-align:center">
+        <h2 style="color:#128C7E">⏳ Iniciando...</h2>
+        <p>Aguarde o QR Code aparecer.</p>
+      </div>
+    </body></html>
+  `);
+});
+
+server.listen(process.env.PORT || 8080, () => {
+  console.log(`🌐 Servidor web ativo na porta ${process.env.PORT || 8080}`);
+});
+
+// IA
 async function getAIResponse(customerId, customerMessage) {
   if (!conversationHistory.has(customerId)) {
     conversationHistory.set(customerId, []);
@@ -96,8 +145,28 @@ async function getAIResponse(customerId, customerMessage) {
   const maisRapido = modeloMaisRapido();
   if (maisRapido !== prioridade) prioridade = maisRapido;
 
+  console.log(`⚖️ Modelo escolhido: ${prioridade.toUpperCase()} (tipo: ${tipo})`);
+
+  // GEMINI ATUALIZADO
   async function tentarGemini() {
-    if (!GEMINI_API_KEY) return null;
+  if (!GEMINI_API_KEY) return null;
+
+  const inicio = Date.now();
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key=${GEMINI_API_KEY}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        system_instruction: { role: "system", parts: [{ text: BOT_CONFIG.systemPrompt }] },
+        contents: history.map(h => ({
+          role: h.role === "assistant" ? "model" : "user",
+          parts: [{ text: h.content }]
+        }))
+      })
+    }
+  );
+
 
     try {
       const inicio = Date.now();
@@ -120,8 +189,14 @@ async function getAIResponse(customerId, customerMessage) {
       const data = await response.json();
       registrarLatencia("gemini", Date.now() - inicio);
 
-      return data?.candidates?.[0]?.content?.parts?.[0]?.text || null;
-    } catch {
+      if (!data?.candidates?.[0]?.content?.parts?.[0]?.text) {
+        console.error("❌ Erro no Gemini:", data);
+        return null;
+      }
+
+      return data.candidates[0].content.parts[0].text;
+    } catch (e) {
+      console.error("❌ Falha no Gemini:", e);
       return null;
     }
   }
@@ -141,7 +216,8 @@ async function getAIResponse(customerId, customerMessage) {
 
       registrarLatencia("claude", Date.now() - inicio);
       return response.content[0].text;
-    } catch {
+    } catch (e) {
+      console.error("❌ Falha no Claude:", e);
       return null;
     }
   }
@@ -158,13 +234,10 @@ async function getAIResponse(customerId, customerMessage) {
     }
   }
 
-  return "Desculpe, estou com instabilidade no momento. Tente novamente.";
+  return "Desculpe, estou com instabilidade no momento. Tente novamente em instantes.";
 }
 
-// =========================
 // Extrair texto
-// =========================
-
 function extrairTexto(message) {
   const m = message.message;
   if (!m) return "";
@@ -196,65 +269,26 @@ function extrairTexto(message) {
   return "";
 }
 
-// =========================
-// Envio para advogado (WhatsApp + E-mail)
-// =========================
+// Remetente compatível com Business
+function obterRemetente(message) {
+  const jid = message.key.remoteJid;
 
-async function enviarParaAdvogado(sock, numeroCliente, mensagemCliente, respostaIA) {
-  if (!ADVOGADO_NUMERO) return;
+  if (jid.includes("@lid")) {
+    return (
+      message.key.participant ||
+      message.key.sender ||
+      message.key.senderPn ||
+      jid
+    );
+  }
 
-  const texto = [
-    "⚠️ *Atendimento humano solicitado!*",
-    "",
-    `*Número do cliente:* ${numeroCliente}`,
-    "",
-    `*Mensagem do cliente:*`,
-    mensagemCliente,
-    "",
-    `*Resposta da IA:*`,
-    respostaIA,
-    "",
-    "*Motivo:* IA solicitou transferência (TRANSFERIR_HUMANO)",
-  ].join("\n");
-
-  await sock.sendMessage(ADVOGADO_NUMERO, { text: texto });
+  return jid;
 }
 
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port: Number(process.env.SMTP_PORT || 465),
-  secure: true,
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-});
-
-async function enviarEmail(numeroCliente, mensagemCliente, respostaIA) {
-  if (!process.env.SMTP_HOST) return;
-
-  const html = `
-    <h2>⚠️ Atendimento humano solicitado</h2>
-    <p><strong>Número do cliente:</strong> ${numeroCliente}</p>
-    <p><strong>Mensagem do cliente:</strong><br>${mensagemCliente}</p>
-    <p><strong>Resposta da IA:</strong><br>${respostaIA}</p>
-    <p><strong>Motivo:</strong> IA solicitou transferência (TRANSFERIR_HUMANO)</p>
-  `;
-
-  await transporter.sendMail({
-    from: `"JD Advocacia - Bot" <${process.env.SMTP_USER}>`,
-    to: process.env.EMAIL_DESTINO || "julian@jdadvogados.adv.br",
-    subject: "Atendimento humano solicitado",
-    html,
-  });
-}
-
-// =========================
-// Iniciar Bot (Baileys 7.x)
-// =========================
-
+// Iniciar Bot
 async function iniciarBot() {
-  console.log(`\n🤖 Iniciando Bot WhatsApp + IA...`);
+  console.log(`\n🤖 Iniciando Bot WhatsApp + Gemini/Claude...`);
+  console.log(`📋 Empresa: ${BOT_CONFIG.businessName}\n`);
 
   const { state, saveCreds } = await useMultiFileAuthState("auth_info");
   const { version } = await fetchLatestBaileysVersion();
@@ -280,13 +314,24 @@ async function iniciarBot() {
     if (qr) {
       console.log("\n📱 QR Code gerado!\n");
       qrcode.generate(qr, { small: true });
+
+      QRCode.toDataURL(qr, (err, url) => {
+        if (!err) {
+          currentQRUrl = url;
+          console.log("✅ QR Code disponível.\n");
+        }
+      });
     }
 
     if (connection === "open") {
-      console.log(`\n✅ Bot conectado!\n`);
+      botOnline = true;
+      currentQRUrl = null;
+      console.log(`\n✅ Bot "${BOT_CONFIG.businessName}" está online!\n`);
     }
 
     if (connection === "close") {
+      botOnline = false;
+
       const shouldReconnect =
         lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
 
@@ -307,7 +352,7 @@ async function iniciarBot() {
     for (const msg of messages) {
       if (!msg.message || msg.key.fromMe) continue;
 
-      const remoteJid = msg.key.remoteJid;
+      const remoteJid = obterRemetente(msg);
       const texto = extrairTexto(msg);
 
       if (!texto.trim()) continue;
@@ -317,11 +362,6 @@ async function iniciarBot() {
       const aiReply = await getAIResponse(remoteJid, texto);
 
       await sock.sendMessage(remoteJid, { text: aiReply });
-
-      if (aiReply.includes("TRANSFERIR_HUMANO")) {
-        await enviarParaAdvogado(sock, remoteJid, texto, aiReply);
-        await enviarEmail(remoteJid, texto, aiReply);
-      }
     }
   });
 }
