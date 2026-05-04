@@ -148,43 +148,60 @@ async function getAIResponse(customerId, customerMessage) {
 
   console.log(`⚖️ Modelo escolhido: ${prioridade.toUpperCase()} (tipo: ${tipo})`);
 
+  // GEMINI ATUALIZADO
   async function tentarGemini() {
-    const inicio = Date.now();
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${GEMINI_API_KEY}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          system_instruction: { role: "system", parts: [{ text: BOT_CONFIG.systemPrompt }] },
-          contents: history.map(h => ({
-            role: h.role === "assistant" ? "model" : "user",
-            parts: [{ text: h.content }]
-          }))
-        })
+    try {
+      const inicio = Date.now();
+
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key=${GEMINI_API_KEY}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            system_instruction: { role: "system", parts: [{ text: BOT_CONFIG.systemPrompt }] },
+            contents: history.map(h => ({
+              role: h.role === "assistant" ? "model" : "user",
+              parts: [{ text: h.content }]
+            }))
+          })
+        }
+      );
+
+      const data = await response.json();
+      registrarLatencia("gemini", Date.now() - inicio);
+
+      if (!data?.candidates?.[0]?.content?.parts?.[0]?.text) {
+        console.error("❌ Erro no Gemini:", data);
+        return null;
       }
-    );
 
-    const data = await response.json();
-    registrarLatencia("gemini", Date.now() - inicio);
-
-    return data?.candidates?.[0]?.content?.parts?.[0]?.text ||
-      "Desculpe, não consegui gerar uma resposta agora.";
+      return data.candidates[0].content.parts[0].text;
+    } catch (e) {
+      console.error("❌ Falha no Gemini:", e);
+      return null;
+    }
   }
 
   async function tentarClaude() {
-    if (!anthropic) throw new Error("Claude não configurado");
+    if (!anthropic) return null;
 
-    const inicio = Date.now();
-    const response = await anthropic.messages.create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 1024,
-      system: BOT_CONFIG.systemPrompt,
-      messages: history.map(h => ({ role: h.role, content: h.content }))
-    });
+    try {
+      const inicio = Date.now();
 
-    registrarLatencia("claude", Date.now() - inicio);
-    return response.content[0].text;
+      const response = await anthropic.messages.create({
+        model: "claude-3-sonnet-20240229",
+        max_tokens: 1024,
+        system: BOT_CONFIG.systemPrompt,
+        messages: history.map(h => ({ role: h.role, content: h.content }))
+      });
+
+      registrarLatencia("claude", Date.now() - inicio);
+      return response.content[0].text;
+    } catch (e) {
+      console.error("❌ Falha no Claude:", e);
+      return null;
+    }
   }
 
   const ordem = prioridade === "gemini"
@@ -192,12 +209,10 @@ async function getAIResponse(customerId, customerMessage) {
     : [tentarClaude, tentarGemini];
 
   for (const tentativa of ordem) {
-    try {
-      const resposta = await tentativa();
+    const resposta = await tentativa();
+    if (resposta) {
       saveReply(resposta);
       return resposta;
-    } catch (err) {
-      console.error("⚠️ Erro ao tentar modelo:", err.message);
     }
   }
 
@@ -252,7 +267,7 @@ function obterRemetente(message) {
   return jid;
 }
 
-// Iniciar Bot (modo híbrido compatível com WhatsApp Business)
+// Iniciar Bot
 async function iniciarBot() {
   console.log(`\n🤖 Iniciando Bot WhatsApp + Gemini/Claude...`);
   console.log(`📋 Empresa: ${BOT_CONFIG.businessName}\n`);
