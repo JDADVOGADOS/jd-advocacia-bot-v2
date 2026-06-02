@@ -17,12 +17,12 @@ const pino = require("pino");
 
 // IA
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GROQ_API_KEY   = process.env.GROQ_API_KEY;
 const CLAUDE_API_KEY = process.env.ANTHROPIC_API_KEY;
 
-if (!GEMINI_API_KEY) {
-  console.warn("⚠️ GEMINI_API_KEY não encontrada! O bot funcionará apenas com Claude.");
-}
-
+if (!GEMINI_API_KEY) console.warn("⚠️ GEMINI_API_KEY não encontrada.");
+if (!GROQ_API_KEY)   console.warn("⚠️ GROQ_API_KEY não encontrada.");
+if (!CLAUDE_API_KEY) console.warn("⚠️ ANTHROPIC_API_KEY não encontrada.");
 
 const anthropic = CLAUDE_API_KEY ? new Anthropic({ apiKey: CLAUDE_API_KEY }) : null;
 
@@ -31,29 +31,16 @@ const conversationHistory = new Map();
 let currentQRUrl = null;
 let botOnline = false;
 
+// Estatísticas de latência (para logs)
 const modeloStats = {
   gemini: { total: 0, count: 0 },
+  groq:   { total: 0, count: 0 },
   claude: { total: 0, count: 0 },
 };
 
 function registrarLatencia(modelo, ms) {
   modeloStats[modelo].total += ms;
   modeloStats[modelo].count++;
-}
-
-function modeloMaisRapido() {
-  const g = modeloStats.gemini;
-  const c = modeloStats.claude;
-  const gemAvg = g.count ? g.total / g.count : Infinity;
-  const claAvg = c.count ? c.total / c.count : Infinity;
-  return gemAvg <= claAvg ? "gemini" : "claude";
-}
-
-function classificarMensagem(texto) {
-  const simples = ["oi","olá","bom dia","boa tarde","boa noite","tudo bem","como funciona","horário","atendimento"];
-  if (texto.length < 20) return "simples";
-  if (simples.some(p => texto.toLowerCase().includes(p))) return "simples";
-  return "complexa";
 }
 
 const BOT_CONFIG = {
@@ -76,6 +63,15 @@ COMO VOCÊ DEVE SE COMPORTAR:
 - Use linguagem acessível
 - Nunca dê pareceres jurídicos
 - Mantenha respostas curtas
+
+CAMPANHA - CALCULADORA TRIBUTÁRIA (REFORMA TRIBUTÁRIA / SIMPLES NACIONAL):
+- O escritório está realizando uma campanha direcionada a empresas optantes do Simples Nacional.
+- Com a Reforma Tributária, as empresas do Simples Nacional precisarão realizar uma OPÇÃO até o final de setembro de 2025. Essa opção terá efeitos a partir de 2027.
+- Por isso, é fundamental que as empresas realizem simulações em diferentes cenários tributários para embasar a tomada de decisão com segurança.
+- O escritório JD Advogados desenvolveu uma Calculadora Tributária que auxilia nessa análise de cenários.
+- A versão básica está sendo ofertada gratuitamente por e-mail. Se o cliente quiser conhecer a versão completa ou falar com o escritório, ofereça o agendamento.
+- Se o cliente mencionar a calculadora, o app, a reforma tributária, o Simples Nacional ou a opção tributária de 2025/2027, explique brevemente o contexto acima e convide-o a agendar uma conversa pelo link: https://outlook.office.com/book/JulianDavisAdvocacia1@juliandavis.adv.br/?ismsaljsauthenabled
+- Se o cliente preferir falar diretamente com um atendente, use TRANSFERIR_HUMANO.
 
 TRANSFERÊNCIA PARA HUMANO:
 - Se o cliente insistir em detalhes de um caso específico, quiser falar com o advogado, ou você não souber responder, diga que vai transferir para um atendente e termine sua resposta com a palavra TRANSFERIR_HUMANO`,
@@ -123,57 +119,25 @@ server.listen(process.env.PORT || 8080, () => {
   console.log(`🌐 Servidor web ativo na porta ${process.env.PORT || 8080}`);
 });
 
-// IA
+// IA — ordem fixa: Gemini → Groq → Claude
 async function getAIResponse(customerId, customerMessage) {
   if (!conversationHistory.has(customerId)) {
     conversationHistory.set(customerId, []);
   }
 
   const history = conversationHistory.get(customerId);
-
   history.push({ role: "user", content: customerMessage });
 
   if (history.length > BOT_CONFIG.maxHistoryLength) {
     history.splice(0, history.length - BOT_CONFIG.maxHistoryLength);
   }
 
-  const saveReply = (reply) => {
-    history.push({ role: "assistant", content: reply });
-  };
-
-  const tipo = classificarMensagem(customerMessage);
-  let prioridade = tipo === "simples" ? "gemini" : "claude";
-  const maisRapido = modeloMaisRapido();
-  if (maisRapido !== prioridade) prioridade = maisRapido;
-
-  console.log(`⚖️ Modelo escolhido: ${prioridade.toUpperCase()} (tipo: ${tipo})`);
-
-  // GEMINI ATUALIZADO
   async function tentarGemini() {
-  if (!GEMINI_API_KEY) return null;
-
-  const inicio = Date.now();
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key=${GEMINI_API_KEY}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        system_instruction: { role: "system", parts: [{ text: BOT_CONFIG.systemPrompt }] },
-        contents: history.map(h => ({
-          role: h.role === "assistant" ? "model" : "user",
-          parts: [{ text: h.content }]
-        }))
-      })
-    }
-  );
-
-
+    if (!GEMINI_API_KEY) return null;
     try {
       const inicio = Date.now();
-
       const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key=${GEMINI_API_KEY}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=${GEMINI_API_KEY}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -186,53 +150,78 @@ async function getAIResponse(customerId, customerMessage) {
           })
         }
       );
-
       const data = await response.json();
       registrarLatencia("gemini", Date.now() - inicio);
-
       if (!data?.candidates?.[0]?.content?.parts?.[0]?.text) {
-        console.error("❌ Erro no Gemini:", data);
+        console.error("❌ Erro no Gemini:", JSON.stringify(data));
         return null;
       }
-
       return data.candidates[0].content.parts[0].text;
     } catch (e) {
-      console.error("❌ Falha no Gemini:", e);
+      console.error("❌ Falha no Gemini:", e.message);
+      return null;
+    }
+  }
+
+  async function tentarGroq() {
+    if (!GROQ_API_KEY) return null;
+    try {
+      const inicio = Date.now();
+      const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${GROQ_API_KEY}`
+        },
+        body: JSON.stringify({
+          model: "llama-3.1-8b-instant",
+          messages: [
+            { role: "system", content: BOT_CONFIG.systemPrompt },
+            ...history.map(h => ({ role: h.role, content: h.content }))
+          ],
+          max_tokens: 1024
+        })
+      });
+      const data = await response.json();
+      registrarLatencia("groq", Date.now() - inicio);
+      if (!data?.choices?.[0]?.message?.content) {
+        console.error("❌ Erro no Groq:", JSON.stringify(data));
+        return null;
+      }
+      return data.choices[0].message.content;
+    } catch (e) {
+      console.error("❌ Falha no Groq:", e.message);
       return null;
     }
   }
 
   async function tentarClaude() {
     if (!anthropic) return null;
-
     try {
       const inicio = Date.now();
-
       const response = await anthropic.messages.create({
-        model: "claude-sonnet-4-6",
+        model: "claude-haiku-4-5-20251001",
         max_tokens: 1024,
         system: BOT_CONFIG.systemPrompt,
         messages: history.map(h => ({ role: h.role, content: h.content }))
       });
-
       registrarLatencia("claude", Date.now() - inicio);
       return response.content[0].text;
     } catch (e) {
-      console.error("❌ Falha no Claude:", e);
+      console.error("❌ Falha no Claude:", e.message);
       return null;
     }
   }
 
-  const ordem = prioridade === "gemini"
-    ? [tentarGemini, tentarClaude]
-    : [tentarClaude, tentarGemini];
-
-  for (const tentativa of ordem) {
-    const resposta = await tentativa();
+  for (const [nome, fn] of [["Gemini", tentarGemini], ["Groq", tentarGroq], ["Claude", tentarClaude]]) {
+    console.log(`🤖 Tentando ${nome}...`);
+    const resposta = await fn();
     if (resposta) {
-      saveReply(resposta);
+      console.log(`✅ Respondido pelo ${nome}`);
+      history.push({ role: "assistant", content: resposta });
       return resposta;
     }
+    console.warn(`⚠️ ${nome} falhou, tentando próximo...`);
   }
 
   return "Desculpe, estou com instabilidade no momento. Tente novamente em instantes.";
