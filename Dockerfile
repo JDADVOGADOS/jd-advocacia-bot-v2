@@ -1,5 +1,7 @@
 FROM node:20-slim
 
+RUN apt-get update && apt-get install -y openssh-client git && rm -rf /var/lib/apt/lists/*
+
 # Melhor performance e menos lixo
 ENV NODE_ENV=production
 
